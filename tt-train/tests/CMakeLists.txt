@@ -182,6 +182,7 @@ if(TARGET benchmark::benchmark)
         benchmark/frobenius_normalize_benchmark.cpp
         benchmark/polynorm_fusion_benchmark.cpp
         benchmark/gram_matmul_benchmark.cpp
+        benchmark/transpose_matmul_benchmark.cpp
     )
 
     foreach(BENCH_SRC ${BENCHMARK_SOURCES})
