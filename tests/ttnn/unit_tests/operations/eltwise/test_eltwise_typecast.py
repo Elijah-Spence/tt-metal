@@ -2,6 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import pytest
 import torch
 import ttnn
@@ -14,6 +15,8 @@ from tests.ttnn.python_api_testing.typecast_test_helpers import (
     uses_exact_integer_typecast_check,
 )
 from tests.ttnn.utils_for_testing import assert_with_pcc, assert_equal
+
+from models.common.utility_functions import is_wormhole_b0, is_blackhole
 
 mem_configs = [
     ttnn.DRAM_MEMORY_CONFIG,
@@ -148,6 +151,14 @@ class TestTypecast:
     ):
         if tt_input_dtype == tt_output_dtype:
             pytest.skip("Same I/O data types. Skip.")
+
+        if (
+            (tt_input_dtype == ttnn.uint32 and tt_output_dtype == ttnn.uint16)
+            and is_blackhole()
+            and os.environ.get("TT_METAL_SIMULATOR")
+        ):
+            pytest.skip("Tests requiring insturction mode 9 for SFPSTORE does not work on tt-sim: #47396")
+
         in_low, in_high = typecast_test_input_bounds(tt_input_dtype, tt_output_dtype)
         shape = input_shapes[0]
         torch_input = make_typecast_test_input(shape, pt_input_dtype, in_low, in_high)
