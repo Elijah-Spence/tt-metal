@@ -124,7 +124,7 @@ NOINLINE NOCLONE void _print_compute_info(const UnwindContext context)
 template <Trigger level, typename T>
 TT_ALWAYS_INLINE void operand_assert(const State<T> expected, const State<T> actual, ct_string message, const UnwindContext update, const UnwindContext current)
 {
-    if constexpr (!enabled_trigger(level) || expected.assert_cond(actual))
+    if (!enabled_trigger(level) || expected.assert_cond(actual))
     {
         return;
     }
@@ -147,7 +147,7 @@ TT_ALWAYS_INLINE void operand_assert(const State<T> expected, const State<T> act
 template <Trigger level>
 NOINLINE NOCLONE bool operation_assert(const Operation expected, const Operation actual, const UnwindContext update, const UnwindContext current)
 {
-    if constexpr (!enabled_trigger(level) || expected == actual)
+    if (!enabled_trigger(level) || expected == actual)
     {
         // If check is enabled and passed, return true.
         return enabled_trigger(level) && expected == actual;
@@ -257,7 +257,7 @@ NOINLINE NOCLONE void fsm_assert(
     const UnwindContext update,
     const UnwindContext current)
 {
-    if constexpr (!enabled_trigger(level) || success)
+    if (!enabled_trigger(level) || success)
     {
         return;
     }
