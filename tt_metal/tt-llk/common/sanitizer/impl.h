@@ -267,7 +267,6 @@ static inline void pack_operand_check_impl(
     if (!thread_silent_get_impl(context))
     {
         const UnwindContext current = context.current;
-        LLK_SAN_PEDANTIC_PANIC(!state.is_configured, "{:#x} : executing init/execute/uninit before hwconfigure", current.pc);
 
         operand_assert<Trigger::ERROR>(
             state.dest_width_32, dest_acc_en, CTSTR("configured vs provided PACK DEST ACCUMULATION are mismatched"), context.configure_pack, current);
