@@ -75,11 +75,8 @@ static inline bool thread_silent_get_impl(const ThreadOutputContext& context)
 
 static TT_ALWAYS_INLINE void write_unwind_context(UnwindContext& context)
 {
-    asm volatile(
-        "auipc %[pc], 0\n"
-        "mv %[ra], ra"
-        : [pc] "=r"(context.pc), [ra] "=r"(context.ra) // Output operands
-    );
+    asm volatile("auipc %[pc], 0\n" : [pc] "=r"(context.pc));
+    context.ra = (uintptr_t)__builtin_return_address(0);
 }
 
 static inline void thread_context_push_impl(ThreadOutputContext& context)
