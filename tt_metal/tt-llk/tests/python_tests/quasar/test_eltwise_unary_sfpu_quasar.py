@@ -57,6 +57,29 @@ SFPU_UNARY_FORMATS = input_output_formats(
     ]
 )
 
+# The six comparison-to-zero modes. These run integer formats too (and UInt16 via
+# the Int16 container), so the sweep adds them to the float formats above.
+COMP_OPS = [
+    MathOperation.EqualZero,
+    MathOperation.NotEqualZero,
+    MathOperation.LessThanZero,
+    MathOperation.GreaterThanZero,
+    MathOperation.LessThanEqualZero,
+    MathOperation.GreaterThanEqualZero,
+]
+
+# Extra (integer) formats only the comp family sweeps. UInt16 has no native Quasar
+# dest format; the inference routes its data path through Int16 and sets
+# FormatConfig.sfpu_math=UInt16, the only stage the comp kernel reads as uint16.
+SFPU_COMP_EXTRA_FORMATS = input_output_formats(
+    [
+        DataFormat.Int32,
+        DataFormat.Int16,
+        DataFormat.UInt16,
+    ],
+    same=True,
+)
+
 
 # ---------------------------------------------------------------------------
 # Per-operation input preparation (folded verbatim from the standalone files)
@@ -321,7 +344,90 @@ def prepare_unary_inputs(
         return prepare_abs_inputs(src_A, src_B, input_format, output_format)
     if mathop == MathOperation.Square:
         return prepare_square_inputs(src_A, src_B, input_format, output_format)
+    if mathop in COMP_OPS:
+        # UInt16 is routed through the Int16 container and needs non-negative stimuli;
+        # all other comp formats use the signed sign-vs-magnitude builder.
+        if input_format == DataFormat.UInt16:
+            return prepare_comp_inputs_uint16(src_A, src_B, input_format)
+        return prepare_comp_inputs(src_A, src_B, input_format, output_format)
     return prepare_inputs_for_operation(src_A, mathop, input_format, output_format)
+
+
+def prepare_comp_inputs(
+    src_A: torch.Tensor,
+    src_B: torch.Tensor,
+    input_format: DataFormat,
+    output_format: DataFormat,
+) -> torch.Tensor:
+    """
+    Prepare input tensor for comparison-to-zero operations.
+
+    Mixes positive, negative, exact +0.0/-0.0, and small-magnitude values so the
+    sign-vs-magnitude split (ltz/gtz are sign tests; eqz/nez are magnitude tests)
+    is exercised. Avoids NaN/subnormal stimuli, which SFPSETCC does not special-case
+    and on which Quasar and an IEEE golden could disagree.
+    """
+    input_torch_format = format_dict[input_format]
+
+    # Integer formats (Int32 / Int16, both signed): comparison-to-zero only depends on sign and
+    # zero-ness, not magnitude. The default integer stimuli are non-negative with no exact zeros,
+    # so flip signs from src_B and seed a few exact zeros/extremes to exercise all six modes.
+    if not input_torch_format.is_floating_point:
+        big = torch.iinfo(input_torch_format).max // 8
+        signs = torch.where(src_B.to(torch.float32) < 0.0, -1, 1)
+        values = (src_A.to(torch.int64) % big) * signs
+
+        flat = values.flatten()
+        for i, seed in enumerate([0, 1, -1, big, -big, 2]):
+            if i < flat.numel():
+                flat[i] = seed
+        return flat.reshape(values.shape).to(input_torch_format)
+
+    src_A_float = src_A.to(torch.float32)
+    src_B_float = src_B.to(torch.float32)
+
+    # Magnitudes in a comfortably-representable range, signed by src_B.
+    magnitudes = torch.clamp(torch.abs(src_A_float) * 0.5 + 0.5, 0.1, 100.0)
+    signs = torch.where(src_B_float < 0.0, -1.0, 1.0)
+    values = signs * magnitudes
+
+    flat = values.flatten()
+    # Seed exact zeros of both signs and a few small-magnitude values to pin
+    # down the sign-vs-magnitude behaviour at the origin.
+    if flat.numel() >= 8:
+        flat[0] = 0.0  # +0.0
+        flat[1] = -0.0  # -0.0
+        flat[2] = 1.0
+        flat[3] = -1.0
+        flat[4] = 0.5
+        flat[5] = -0.5
+        flat[6] = 2.0
+        flat[7] = -2.0
+    values = flat.reshape(values.shape)
+
+    return values.to(input_torch_format)
+
+
+def prepare_comp_inputs_uint16(
+    src_A: torch.Tensor, src_B: torch.Tensor, input_format: DataFormat
+) -> torch.Tensor:
+    """
+    Non-negative 16-bit stimuli for the UInt16 comp path.
+
+    Values are clamped to [0, 32767] so the bit pattern is identical whether the dest is read as
+    Int16/SMAG16 (the unpack/pack container) or UINT16 (the SFPU). Seeds exact zero and a couple
+    of extremes so every comparison mode is exercised; the signed and unsigned goldens coincide
+    on this range.
+    """
+    values = (src_A.to(torch.int64).abs() % 32768) | (
+        src_B.to(torch.int64).abs() % 256
+    )  # mix in low bits from B for variety, stays non-negative
+
+    flat = values.flatten()
+    for i, seed in enumerate([0, 1, 2, 32767, 100, 0]):
+        if i < flat.numel():
+            flat[i] = seed
+    return flat.reshape(values.shape).to(format_dict[input_format])
 
 
 # ---------------------------------------------------------------------------
@@ -351,24 +457,33 @@ OP_CONFIGS = [
     OpConfig(MathOperation.Tanh, TENSOR_DIMS, DEST_SYNC_MODES, uniform_spec=True),
     OpConfig(MathOperation.Sigmoid, TENSOR_DIMS, DEST_SYNC_MODES, uniform_spec=True),
     OpConfig(MathOperation.Silu, TENSOR_DIMS, DEST_SYNC_MODES, uniform_spec=True),
-]
+] + [OpConfig(op, TENSOR_DIMS, DEST_SYNC_MODES, seed=42) for op in COMP_OPS]
 
 OP_CONFIG_BY_MATHOP = {cfg.mathop: cfg for cfg in OP_CONFIGS}
 
 
-def generate_sfpu_unary_combinations(formats_list: List[FormatConfig]):
+def formats_for_op(cfg: OpConfig) -> List[FormatConfig]:
+    """Float formats for every op, plus the integer/UInt16 formats only comp sweeps."""
+    if cfg.mathop in COMP_OPS:
+        return SFPU_UNARY_FORMATS + SFPU_COMP_EXTRA_FORMATS
+    return SFPU_UNARY_FORMATS
+
+
+def generate_sfpu_unary_combinations():
     """
-    Build the full unary-SFPU sweep across all ops: a uniform
-    formats × dest_acc × {Half, Full} dest-sync × {No, Yes} implied-math ×
-    {[32, 32], [64, 64]} matrix per op. (Consolidation dropped the redundant
-    [32, 64] dim and the per-op dest-sync quirks of the standalone tests.)
+    Build the full unary-SFPU sweep across all ops: per op, a
+    formats × dest_acc × dest-sync × implied-math × {[32, 32], [64, 64]} matrix.
+
+    Every op runs the same matrix over its own format set (from formats_for_op).
+    32-bit inputs always pair with dest_acc=Yes; 16-bit inputs sweep both dest_acc
+    modes. Invalid format/dest_acc combinations are dropped via the shared filter.
 
     Returns: list of (mathop, fmt, dest_acc, dest_sync, implied_math_format,
     input_dimensions) tuples.
     """
     combinations = []
     for cfg in OP_CONFIGS:
-        for fmt in formats_list:
+        for fmt in formats_for_op(cfg):
             in_fmt = fmt.input_format
 
             dest_acc_modes = (
@@ -403,9 +518,7 @@ def generate_sfpu_unary_combinations(formats_list: List[FormatConfig]):
 
 @pytest.mark.quasar
 @parametrize(
-    mathop_formats_dest_acc_sync_implied_math_input_dims=generate_sfpu_unary_combinations(
-        SFPU_UNARY_FORMATS
-    ),
+    mathop_formats_dest_acc_sync_implied_math_input_dims=generate_sfpu_unary_combinations(),
 )
 def test_eltwise_unary_sfpu_quasar(
     mathop_formats_dest_acc_sync_implied_math_input_dims,
@@ -413,7 +526,8 @@ def test_eltwise_unary_sfpu_quasar(
     """
     Consolidated unary-SFPU test on Quasar. One compile-time-selected op per
     variant (abs, exp, gelu, relu, reciprocal, sqrt, tanh, sigmoid, silu, rsqrt,
-    square), validated against the UnarySFPUGolden reference.
+    square, and the six compare-to-zero modes), validated against the
+    UnarySFPUGolden reference.
     """
     mathop, formats, dest_acc, dest_sync, implied_math_format, input_dimensions = (
         mathop_formats_dest_acc_sync_implied_math_input_dims[0]
@@ -437,15 +551,25 @@ def test_eltwise_unary_sfpu_quasar(
 
     num_faces = MAX_NUM_FACES
 
-    generate_golden = get_golden_generator(UnarySFPUGolden)
-    golden_tensor = generate_golden(
-        mathop,
-        src_A,
-        formats.output_format,
-        dest_acc,
-        formats.input_format,
-        input_dimensions,
-    )
+    if format_dict[formats.input_format].is_floating_point:
+        generate_golden = get_golden_generator(UnarySFPUGolden)
+        golden_tensor = generate_golden(
+            mathop,
+            src_A,
+            formats.output_format,
+            dest_acc,
+            formats.input_format,
+            input_dimensions,
+        )
+    else:
+        # Integer-input ops (Int32/Int16/UInt16 — currently only the comp family): apply the
+        # UnarySFPUGolden op element-wise instead of through its __call__. __call__ runs a
+        # float-only pipeline (float dst, tilize, FTZ) that would mangle integer values; applying
+        # the op per element keeps integers intact, and for an element-wise op row-major order
+        # already matches the packed result. A non-element-wise integer op would need its own path.
+        ops = UnarySFPUGolden().ops
+        op_res = [ops[mathop](x) for x in src_A.flatten().tolist()]
+        golden_tensor = torch.tensor(op_res, dtype=format_dict[formats.output_format])
 
     unpack_to_dest = (
         formats.input_format.is_32_bit() and dest_acc == DestAccumulation.Yes
