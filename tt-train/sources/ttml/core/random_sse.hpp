@@ -70,6 +70,11 @@ inline size_t calculate_aligned_chunk_size(size_t total_size, size_t num_threads
     return ((chunk_size + elems_per_line - 1) / elems_per_line) * elems_per_line;
 }
 
+template <typename T>
+inline size_t calculate_num_chunks(size_t total_size, size_t chunk_size) noexcept {
+    return (total_size + chunk_size - 1) / chunk_size;
+}
+
 // Create chunks for parallel processing
 template <typename T>
 inline auto create_chunks(std::span<T> output, size_t num_threads, size_t chunk_size) noexcept {
@@ -84,6 +89,10 @@ inline auto create_chunks(std::span<T> output, size_t num_threads, size_t chunk_
 // Calculate thread-specific seed
 inline uint64_t calculate_thread_seed(uint32_t base_seed, size_t thread_id) noexcept {
     return static_cast<uint64_t>(base_seed) + (static_cast<uint64_t>(thread_id) << thread_seed_shift_bits);
+}
+
+inline uint64_t calculate_chunk_seed(uint32_t base_seed, size_t thread_id, size_t chunk_size) noexcept {
+    return static_cast<uint64_t>(base_seed) + (static_cast<uint64_t>(thread_id * chunk_size) << thread_seed_shift_bits);
 }
 
 // ============================================================================
@@ -497,7 +506,19 @@ void generate_uniform_simd_parallel_bfloat16(
         return;
     }
 
-    size_t chunk_size = calculate_aligned_chunk_size<bfloat16>(output.size(), num_threads, simd_bf16_batch_size);
+    // IDEA: Set chunk_size = 512 * 512
+    // - Threads can process multiple chunks (no farming)
+    // - 1 seed per chunk
+    // - Seeds are calculated in parallel sections
+
+    size_t num_chunks = calculate_num_chunks(output.size(), chunk_size);
+
+    // Define fixed CHUNK_SIZE.
+    // This size should be large enough to mitigate seed initialization overhead.
+    // But also small enough to allow a good level of parallelism on large images.
+    constexpr size_t CHUNK_SIZE = 512 * 512;
+
+    // size_t chunk_size = calculate_aligned_chunk_size<bfloat16>(output.size(), num_threads, simd_bf16_batch_size);
     auto chunks = create_chunks(output, num_threads, chunk_size);
 
     std::vector<std::jthread> threads;
@@ -505,7 +526,7 @@ void generate_uniform_simd_parallel_bfloat16(
 
     size_t thread_id = 0;
     for (auto chunk : chunks) {
-        uint64_t thread_seed = calculate_thread_seed(seed, thread_id++);
+        uint64_t thread_seed = calculate_chunk_seed(seed, thread_id++, chunk_size);
         threads.emplace_back([chunk, thread_seed, dist_factory]() {
             generate_uniform_simd_bfloat16(chunk, static_cast<uint32_t>(thread_seed), dist_factory);
         });
