@@ -25,17 +25,6 @@ constexpr static std::uint32_t TRISC_ID = 3;
 constexpr static std::uint32_t TRISC_ID = 1;
 #endif
 
-// DEST section-base register index used by the math thread's compute clients (FPU / SFPU).
-// The clients read their DEST row base from DEST_TARGET_REG_CFG_MATH_SEC<access_id>_Offset.
-//
-// Because the DEST data-valid auto-toggle scheme is left unprogrammed, the clients' access_id
-// never advances and stays pinned at 0. The math thread must therefore publish its DEST bank
-// base into SEC0; writing the per-TRISC slot (SEC1) is dead code as far as SFPU is concerned.
-//
-// Which caused broken multi-tile SyncHalf bank flipping for any math op that actually reads
-// DEST. A no-op forwarder such as the unpack-to-dest datacopy is unaffected, since it never reads DEST.
-constexpr static std::uint8_t DEST_SECTION_BASE_IDX = 0;
-
 // Struct for the ALU addresses
 constexpr std::uint32_t NUM_WORDS_ALU_FORMAT = 3;
 
