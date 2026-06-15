@@ -17,8 +17,12 @@
 #include <cstdint>
 
 #include "api/dataflow/dataflow_api.h"
+#include "api/dataflow/noc.h"
+#include "api/dataflow/circular_buffer.h"
 
 void kernel_main() {
+    Noc noc;
+
     const uint32_t output_addr = get_arg_val<uint32_t>(0);
     const uint32_t my_mt = get_arg_val<uint32_t>(1);
     const uint32_t my_nt_d = get_arg_val<uint32_t>(2);
@@ -46,22 +50,26 @@ void kernel_main() {
     constexpr uint32_t d_in1_num_subblocks_M = per_core_M / d_out_subblock_h;
     constexpr uint32_t d_in1_num_subblocks_N = per_core_N_d / d_out_subblock_w;
 
+    CircularBuffer cb_out_buf(cb_out);
+    CircularBuffer cb_counts_scratch_buf(cb_counts_scratch);
+    CircularBuffer cb_idx_scratch_buf(cb_idx_scratch);
+
     constexpr uint32_t out_accessor_offset = 17;
     constexpr auto out_args = TensorAccessorArgs<out_accessor_offset>();
-    const auto out_acc = TensorAccessor(out_args, output_addr, get_tile_size(cb_out));
+    const auto out_acc = TensorAccessor(out_args, output_addr, cb_out_buf.get_tile_size());
 
-    const uint32_t out_tile_bytes = get_tile_size(cb_out);
+    const uint32_t out_tile_bytes = cb_out_buf.get_tile_size();
 
     // Wait for the reader's counts/idx push and compute effective_chunks =
     // ceil(count / chunk_M_tiles). The writer drains cb_out per chunk;
     // bounding the loop here is required because the reader and compute
     // bound theirs too — without this, the writer would wait forever on
     // cb_out for chunks the compute never pushes.
-    cb_wait_front(cb_counts_scratch, 1);
-    cb_wait_front(cb_idx_scratch, 1);
+    cb_counts_scratch_buf.wait_front(1);
+    cb_idx_scratch_buf.wait_front(1);
     const volatile tt_l1_ptr uint32_t* counts_ptr =
-        reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_counts_scratch));
-    const uint32_t idx_l1 = get_read_ptr(cb_idx_scratch);
+        reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(cb_counts_scratch_buf.get_read_ptr());
+    const uint32_t idx_l1 = cb_idx_scratch_buf.get_read_ptr();
     const volatile tt_l1_ptr uint32_t* idx_ptr = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(idx_l1);
     const uint32_t global_expert_id = idx_ptr[local_expert_id];
     const uint32_t count_value = counts_ptr[global_expert_id];
@@ -74,8 +82,8 @@ void kernel_main() {
         const uint32_t col0 = my_nt_d * per_core_N_d;
         for (uint32_t sb_m = 0; sb_m < d_in1_num_subblocks_M; ++sb_m) {
             for (uint32_t sb_n = 0; sb_n < d_in1_num_subblocks_N; ++sb_n) {
-                cb_wait_front(cb_out, d_out_subblock_num_tiles);
-                uint32_t l1_read = get_read_ptr(cb_out);
+                cb_out_buf.wait_front(d_out_subblock_num_tiles);
+                uint32_t subblock_tile_offset = 0;
                 for (uint32_t i = 0; i < d_out_subblock_h; ++i) {
                     for (uint32_t j = 0; j < d_out_subblock_w; ++j) {
                         const uint32_t row = row0 + sb_m * d_out_subblock_h + i;
@@ -99,21 +107,26 @@ void kernel_main() {
                         //     is not chunk-aligned.
                         if (col < N_down_tiles_full && row < M_tiles_full && row < count_tiles) {
                             const uint32_t tile_idx = row * N_down_tiles_full + col;
-                            noc_async_write_page(tile_idx, out_acc, l1_read);
+                            noc.async_write(
+                                cb_out_buf,
+                                out_acc,
+                                out_tile_bytes,
+                                {.offset_bytes = subblock_tile_offset},
+                                {.page_id = tile_idx});
                         }
-                        l1_read += out_tile_bytes;
+                        subblock_tile_offset += out_tile_bytes;
                     }
                 }
                 // Wait for the writes to LEAVE this core (departed sender);
                 // doesn't wait for the DRAM round-trip. Safe to reuse the L1
                 // slot now — the NoC has captured the data. ~10x faster than
                 // noc_async_write_barrier per subblock at small per_core_M.
-                noc_async_writes_flushed();
-                cb_pop_front(cb_out, d_out_subblock_num_tiles);
+                noc.async_writes_flushed();
+                cb_out_buf.pop_front(d_out_subblock_num_tiles);
             }
         }
     }
     // Ensure all outstanding writes complete at the destination before the
     // kernel returns (the next dispatched op may read this output).
-    noc_async_write_barrier();
+    noc.async_write_barrier();
 }
