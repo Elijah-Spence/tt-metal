@@ -450,6 +450,7 @@ def test_ttnn_combine_ds(
     ids=["tile"],
 )
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
+@pytest.mark.extended_model
 def test_ttnn_combine_glm(
     mesh_device,
     seq_len_per_chip,
@@ -520,6 +521,7 @@ def test_ttnn_combine_glm(
     ids=["tile"],
 )
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
+@pytest.mark.extended_model
 def test_ttnn_combine_minimax(
     mesh_device,
     seq_len_per_chip,
@@ -589,6 +591,7 @@ def test_ttnn_combine_minimax(
     ids=["tile"],
 )
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
+@pytest.mark.extended_model
 def test_ttnn_combine_v4_pro(
     mesh_device,
     seq_len_per_chip,
@@ -658,6 +661,7 @@ def test_ttnn_combine_v4_pro(
     ids=["tile"],
 )
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
+@pytest.mark.extended_model
 def test_ttnn_combine_v4_flash(
     mesh_device,
     seq_len_per_chip,
@@ -727,6 +731,7 @@ def test_ttnn_combine_v4_flash(
     ids=["tile"],
 )
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
+@pytest.mark.extended_model
 def test_ttnn_combine_gpt_oss(
     mesh_device,
     seq_len_per_chip,
