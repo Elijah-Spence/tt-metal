@@ -183,16 +183,18 @@ Tensor group_norm(
         input_tensor.memory_config().memory_layout() != TensorMemoryLayout::WIDTH_SHARDED,
         "Unsupported memory layout: Input tensor cannot be width-sharded.");
 
-    // Interleaved (non-sharded) group_norm reads tiled pages directly: its reader kernel has no
-    // row-major un-tiling path (unlike the sharded kernel, which internally tilizes a ROW_MAJOR
-    // input). A ROW_MAJOR interleaved input therefore makes the device read mis-formatted data and
-    // hang. Reject it up front with an actionable error instead of hanging the board.
-    TT_FATAL(
-        input_tensor.is_sharded() || input_tensor.layout() == Layout::TILE,
-        "group_norm: Interleaved (non-sharded) input_tensor must be in TILE layout, got {}. "
-        "Tilize the input first (e.g. ttnn.tilize_with_zero_padding), or provide a sharded input "
-        "(ROW_MAJOR is only supported for sharded inputs).",
-        input_tensor.layout());
+    // Interleaved (non-sharded) ROW_MAJOR input is supported by tilizing on-core inside the
+    // reader/compute kernels (TILIZE_IN path), mirroring how the sharded kernel handles a
+    // ROW_MAJOR shard. No host-side tilize is performed here. The Welford interleaved kernels do
+    // not yet implement the on-core tilize path, so reject that combination with a clear error
+    // instead of hanging.
+    const bool rm_interleaved_input = !input_tensor.is_sharded() && input_tensor.layout() == Layout::ROW_MAJOR;
+    if (rm_interleaved_input) {
+        TT_FATAL(
+            !use_welford,
+            "group_norm: ROW_MAJOR interleaved (non-sharded) input is not supported with use_welford=true yet. "
+            "Use use_welford=false, provide a TILE-layout input, or use a sharded input.");
+    }
 
     const auto& input_shape = input_tensor.logical_shape();
     TT_FATAL(

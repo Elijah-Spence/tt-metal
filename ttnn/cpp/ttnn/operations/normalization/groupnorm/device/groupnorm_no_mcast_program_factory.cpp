@@ -275,6 +275,35 @@ tt::tt_metal::ProgramDescriptor GroupNormDeviceOperation::GroupNormNoMcastProgra
     bool tilize_in = a.layout() == Layout::ROW_MAJOR;
     bool untilize_out = output.layout() == Layout::ROW_MAJOR;
 
+    // ROW_MAJOR interleaved input/output is handled by on-core tilize/untilize in the
+    // reader/compute/writer kernels (TILIZE_IN / UNTILIZE_OUT), which process one out-block of one
+    // group at a time. The following combinations are not implemented on that on-core path yet;
+    // reject them with a clear, actionable error instead of silently mis-reading data and hanging.
+    if (tilize_in || untilize_out) {
+        TT_FATAL(
+            !reader_repack_output,
+            "group_norm: ROW_MAJOR interleaved input/output requires per_core_N ({}) to be a multiple of the tile "
+            "width ({}). Adjust the core grid so each core's channel slice is tile-aligned, or use TILE layout.",
+            per_core_N,
+            tile_width);
+        // The per-block on-core tilize/untilize consumes exactly out_block_h_normal tile-rows per
+        // out-block, so num_out_blocks must divide block_h evenly (no ragged final out-block).
+        TT_FATAL(
+            block_ht_group_1 % num_out_blocks == 0,
+            "group_norm: ROW_MAJOR interleaved input/output requires num_out_blocks ({}) to evenly divide block_h "
+            "({}). Choose a num_out_blocks that divides block_h, or use TILE layout.",
+            num_out_blocks,
+            block_ht_group_1);
+        if (block_ht_group_2 > 0) {
+            TT_FATAL(
+                block_ht_group_2 % num_out_blocks == 0,
+                "group_norm: ROW_MAJOR interleaved input/output requires num_out_blocks ({}) to evenly divide "
+                "block_h_group_2 ({}).",
+                num_out_blocks,
+                block_ht_group_2);
+        }
+    }
+
     auto [math_fidelity, math_approx_mode, fp32_dest_acc_en, packer_l1_acc, dst_full_sync_en] =
         get_compute_kernel_config_args(device->arch(), compute_kernel_config);
 
@@ -743,12 +772,22 @@ tt::tt_metal::ProgramDescriptor GroupNormDeviceOperation::GroupNormNoMcastProgra
                      : "ttnn/cpp/ttnn/operations/normalization/groupnorm/device/kernels/dataflow/"
                        "writer_unary_gn_rm_gb.cpp");
 
+    // ROW_MAJOR interleaved output: the writer must scatter on-core untilized row-major rows to the
+    // ROW_MAJOR DRAM output (UNTILIZE_OUT path), mirroring the reader's TILIZE_IN gather. Without this
+    // define the writer would silently take the TILE-layout write path and write tiled bytes into a
+    // row-major buffer.
+    std::map<std::string, std::string> writer_defines;
+    if (untilize_out) {
+        writer_defines["UNTILIZE_OUT"] = "1";
+    }
+
     KernelDescriptor writer_desc_g1;
     writer_desc_g1.kernel_source = writer_kernel;
     writer_desc_g1.source_type = KernelDescriptor::SourceType::FILE_PATH;
     writer_desc_g1.core_ranges = all_cores_group_1;
     writer_desc_g1.compile_time_args = writer_mcast_sender_compile_time_args_group_1;
     writer_desc_g1.named_compile_time_args = to_named_args_no_mcast(writer_named_compile_time_args_group_1);
+    writer_desc_g1.defines = KernelDescriptor::Defines(writer_defines.begin(), writer_defines.end());
     writer_desc_g1.config = DataMovementConfigDescriptor{
         .processor = DataMovementProcessor::RISCV_1,
         .noc = writer_noc,
@@ -762,6 +801,7 @@ tt::tt_metal::ProgramDescriptor GroupNormDeviceOperation::GroupNormNoMcastProgra
         writer_desc_g2.core_ranges = all_cores_group_2;
         writer_desc_g2.compile_time_args = writer_mcast_sender_compile_time_args_group_2;
         writer_desc_g2.named_compile_time_args = to_named_args_no_mcast(writer_named_compile_time_args_group_2);
+        writer_desc_g2.defines = KernelDescriptor::Defines(writer_defines.begin(), writer_defines.end());
         writer_desc_g2.config = DataMovementConfigDescriptor{
             .processor = DataMovementProcessor::RISCV_1,
             .noc = writer_noc,
@@ -1031,6 +1071,30 @@ tt::tt_metal::ProgramDescriptor GroupNormDeviceOperation::GroupNormNoMcastProgra
             .core_ranges = all_cores_group_2,
             .format_descriptors = {{CBFormatDescriptor{
                 .buffer_index = static_cast<uint8_t>(out_cb_index),
+                .data_format = in_data_format,
+                .page_size = in_single_tile_size,
+            }}},
+        });
+
+        // Row-major reread scratch CB (c_20): for overlapping groups the reader gathers the previously
+        // written ROW_MAJOR output rows for the shared tiles into this CB, and the compute tilizes them
+        // on-core into cb_reread_out (c_23) for the cross-group accumulation. Without this the reader
+        // would reread the ROW_MAJOR output as tiles and corrupt the shared (group-boundary) tiles.
+        constexpr uint32_t reread_rm_cb_index = tt::CBIndex::c_20;
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = in_CB_size_group_1,
+            .core_ranges = all_cores_group_1,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(reread_rm_cb_index),
+                .data_format = in_data_format,
+                .page_size = in_single_tile_size,
+            }}},
+        });
+        desc.cbs.push_back(CBDescriptor{
+            .total_size = in_CB_size_group_2,
+            .core_ranges = all_cores_group_2,
+            .format_descriptors = {{CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(reread_rm_cb_index),
                 .data_format = in_data_format,
                 .page_size = in_single_tile_size,
             }}},
