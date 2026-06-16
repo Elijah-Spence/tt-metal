@@ -68,14 +68,17 @@ COMP_OPS = [
     MathOperation.GreaterThanEqualZero,
 ]
 
-# Extra (integer) formats only the comp family sweeps. UInt16 has no native Quasar
-# dest format; the inference routes its data path through Int16 and sets
-# FormatConfig.sfpu_math=UInt16, the only stage the comp kernel reads as uint16.
+# Extra (integer) formats only the comp family sweeps. Int32/Int16/Int8 (signed) and UInt8
+# (unsigned) use their native Quasar dest format. UInt16 is the exception: it has no native Quasar
+# dest format, so the inference routes its data path through Int16 and sets FormatConfig.sfpu_math=
+# UInt16, the only stage the comp kernel reads as uint16.
 SFPU_COMP_EXTRA_FORMATS = input_output_formats(
     [
         DataFormat.Int32,
         DataFormat.Int16,
+        DataFormat.Int8,
         DataFormat.UInt16,
+        DataFormat.UInt8,
     ],
     same=True,
 )
@@ -345,10 +348,10 @@ def prepare_unary_inputs(
     if mathop == MathOperation.Square:
         return prepare_square_inputs(src_A, src_B, input_format, output_format)
     if mathop in COMP_OPS:
-        # UInt16 is routed through the Int16 container and needs non-negative stimuli;
-        # all other comp formats use the signed sign-vs-magnitude builder.
-        if input_format == DataFormat.UInt16:
-            return prepare_comp_inputs_uint16(src_A, src_B, input_format)
+        # Unsigned formats need non-negative stimuli (a signed split would wrap under the unsigned
+        # dtype); signed formats use the sign-vs-magnitude builder.
+        if input_format in (DataFormat.UInt16, DataFormat.UInt8):
+            return prepare_comp_inputs_uint(src_A, src_B, input_format)
         return prepare_comp_inputs(src_A, src_B, input_format, output_format)
     return prepare_inputs_for_operation(src_A, mathop, input_format, output_format)
 
@@ -411,23 +414,26 @@ def prepare_comp_inputs(
     return values.to(input_torch_format)
 
 
-def prepare_comp_inputs_uint16(
+def prepare_comp_inputs_uint(
     src_A: torch.Tensor, src_B: torch.Tensor, input_format: DataFormat
 ) -> torch.Tensor:
     """
-    Non-negative 16-bit stimuli for the UInt16 comp path.
+    Non-negative stimuli for an unsigned comp path (UInt8 / UInt16).
 
-    Values are clamped to [0, 32767] so the bit pattern is identical whether the dest is read as
-    Int16/SMAG16 (the unpack/pack container) or UINT16 (the SFPU). Seeds exact zero and a couple
-    of extremes so every comparison mode is exercised; the signed and unsigned goldens coincide
-    on this range.
+    UInt16 rides the Int16/SMAG16 container, so its values are kept in [0, 32767] where the bit
+    pattern is identical read as signed or unsigned. UInt8 uses its native UINT8 dest, so it spans
+    the full [0, 255] range (bit 7 set is exercised). Seeds exact zero and a couple of extremes so
+    every comparison mode is hit; the signed and unsigned goldens coincide on non-negative inputs.
     """
-    values = (src_A.to(torch.int64).abs() % 32768) | (
+    # Signed-safe magnitude ceiling: half-range for UInt16 (Int16 container), full range for UInt8.
+    hi = 32767 if input_format == DataFormat.UInt16 else 255
+    values = (src_A.to(torch.int64).abs() % (hi + 1)) | (
         src_B.to(torch.int64).abs() % 256
     )  # mix in low bits from B for variety, stays non-negative
+    values = values % (hi + 1)
 
     flat = values.flatten()
-    for i, seed in enumerate([0, 1, 2, 32767, 100, 0]):
+    for i, seed in enumerate([0, 1, 2, hi, 100, 0]):
         if i < flat.numel():
             flat[i] = seed
     return flat.reshape(values.shape).to(format_dict[input_format])

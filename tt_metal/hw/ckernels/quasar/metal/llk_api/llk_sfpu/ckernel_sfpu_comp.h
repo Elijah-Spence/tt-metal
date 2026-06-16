@@ -9,6 +9,7 @@
 #include "ckernel_trisc_common.h"
 #include "cmath_common.h"
 #include "llk_defs.h"
+#include "llk_math_eltwise_sfpu_common.h"
 #include "lltt.h"
 #include "sfpi.h"
 
@@ -30,41 +31,26 @@ constexpr std::uint32_t SFPSETCC_IMM_FP32 = 0x800;
 /**
  * @brief Whether FMT is read/written as an integer (vs float) — drives the 1/0 result encoding.
  *
- * @tparam FMT: Math-side DataFormat (Int32 / Int16 signed, UInt16 unsigned).
+ * Also gates the sfpmem mode: integers take their explicit width from the canonical
+ * @ref _sfpu_sfpmem_type_<FMT>() selector (Int32→INT32, Int16→INT16, Int8→INT8, UInt8→UINT8,
+ * UInt16→UINT16), while floats use sfpmem::DEFAULT (the explicit fp16 modes decode the fp16b
+ * boolean result as NaN).
+ *
+ * @note Int8/UInt8 use their native Quasar dest format (SMAG8 / UINT8) — these are real
+ *       register-file formats, so the 8-bit datapath round-trips natively. UInt16 is the exception:
+ *       it is not a Quasar register-file format at all (absent from the unpacker / SrcA-B / dest /
+ *       packer encodings — see VALID_QUASAR_SRC/DEST_REG_FORMATS; Int8/UInt8 are present, hence
+ *       native). It is therefore routed through the Int16/SMAG16 container — unpack and pack run in
+ *       Int16 (the known-good 16-bit bit-passthrough path) and only the SFPU accesses the
+ *       unsigned-16 semantics via sfpmem::UINT16. The caller must keep the unpack/pack/math formats
+ *       at Int16 and select FMT=UInt16 only to pick that sfpmem mode.
+ *
+ * @tparam FMT: SFPU DataFormat (sfpu_math): Int32 / Int16 / Int8 signed, UInt16 / UInt8 unsigned.
  */
 template <DataFormat FMT>
 inline constexpr bool _zero_comp_is_int_() {
-    return FMT == DataFormat::Int32 || FMT == DataFormat::Int16 || FMT == DataFormat::UInt16;
-}
-
-/**
- * @brief SFPLOAD/SFPSTORE sfpmem mode for FMT.
- *
- * Integer formats select their explicit mode so the load/store reads/writes the right width:
- * Int32 → INT32 (sign-magnitude), Int16 → INT16 (sign-magnitude SMAG16), UInt16 → UINT16
- * (zero-extend on load, truncate on store). Float formats use DEFAULT, letting the HW resolve
- * fp16/bf16/fp32 from the format config.
- *
- * @note UInt16 has no native Quasar register-file/dest format: its dest datapath corrupts the
- *       round-trip (0/1 read back as 0x400 = 1<<10), while the SFPU's own UINT16 load/store is
- *       correct. UInt16 is therefore routed through the Int16/SMAG16 container — unpack and pack
- *       run in Int16 (bit passthrough, the known-good 16-bit path) and only the SFPU loads/stores
- *       in UINT16 mode, which keeps the data off the broken dest-format path. The caller must keep
- *       the unpack/pack/math formats at Int16 and select FMT=UInt16 only to pick this sfpmem mode.
- *
- * @tparam FMT: SFPU DataFormat.
- */
-template <DataFormat FMT>
-inline constexpr std::uint32_t _zero_comp_sfpmem_mode_() {
-    if constexpr (FMT == DataFormat::Int32) {
-        return p_sfpu::sfpmem::INT32;
-    } else if constexpr (FMT == DataFormat::Int16) {
-        return p_sfpu::sfpmem::INT16;
-    } else if constexpr (FMT == DataFormat::UInt16) {
-        return p_sfpu::sfpmem::UINT16;
-    } else {
-        return p_sfpu::sfpmem::DEFAULT;
-    }
+    return FMT == DataFormat::Int32 || FMT == DataFormat::Int16 || FMT == DataFormat::Int8 ||
+           FMT == DataFormat::UInt16 || FMT == DataFormat::UInt8;
 }
 
 /**
@@ -125,7 +111,7 @@ inline __attribute__((always_inline)) void _zero_comp_setcc_() {
  * (1 -> 0x0000_0001) for a clean result at any store width. SHORT is used rather than USHORT
  * (UINT16) because USHORT left-shifts the immediate by 10 inside the LREG.
  *
- * @tparam FMT: Math-side DataFormat; integer → integer 0/1, float → fp16b 0.0/1.0.
+ * @tparam FMT: SFPU DataFormat (sfpu_math); integer → integer 0/1, float → fp16b 0.0/1.0.
  * @tparam VALUE: false → 0, true → 1.
  */
 template <DataFormat FMT, bool VALUE>
@@ -162,7 +148,7 @@ inline constexpr bool _zero_comp_default_() {
  * write 0, leaving every other lane at 1. This folds the opposite-signed zero into the true set
  * for free — the NE0 test already excludes ±0 from the strict set, so the complement includes it.
  *
- * @tparam FMT: Math-side DataFormat.
+ * @tparam FMT: SFPU DataFormat (sfpu_math).
  * @tparam COMP_MODE: Comparison-to-zero mode, values =
  *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
  */
@@ -231,13 +217,17 @@ struct zero_comp_fill<FMT, SfpuType::less_than_equal_zero> {
  * (dest.incr=2) so each replay advances the dest counter by one SFP-row pair while the load/store
  * offsets stay constant, letting the recorded instructions re-issue unchanged across iterations.
  *
- * @tparam FMT: Math-side DataFormat (Int32, Int16, UInt16, or a float format).
+ * @tparam FMT: SFPU DataFormat (sfpu_math): Int32, Int16, Int8, UInt16, UInt8, or a float format.
  * @tparam COMP_MODE: Comparison-to-zero mode, values =
  *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
  */
 template <DataFormat FMT, SfpuType COMP_MODE>
 inline __attribute__((always_inline)) void _zero_comp_body_() {
-    constexpr std::uint32_t sfpmem = _zero_comp_sfpmem_mode_<FMT>();
+    // Integers take their explicit width from the canonical selector (Int32→INT32, Int16→INT16,
+    // UInt16→UINT16). Floats must use DEFAULT: the comp result is written as an fp16b 1.0 bit
+    // pattern, and the explicit fp16 sfpmem modes (FP16A/FP16B) decode that store back as NaN —
+    // only the implied/DEFAULT format round-trips it correctly.
+    constexpr std::uint32_t sfpmem = _zero_comp_is_int_<FMT>() ? _sfpu_sfpmem_type_<FMT>() : p_sfpu::sfpmem::DEFAULT;
 
     TTI_SFPLOAD(p_sfpu::LREG0, sfpmem, ADDR_MOD_7, 0 /* done */, 0 /* dest_reg */);  // load x from dest
     _zero_comp_loadi_bool_<FMT, _zero_comp_default_<COMP_MODE>()>();  // result lanes default to COMP_MODE's wide value
@@ -257,7 +247,7 @@ inline __attribute__((always_inline)) void _zero_comp_body_() {
  * advances the dest counter per replay, so the loop processes one SFP-row pair per iteration.
  *
  * @tparam APPROXIMATION_MODE: Unused (no approx path); retained for dispatcher signature symmetry.
- * @tparam FMT: Math-side DataFormat (Int32, Int16, UInt16, or a float format).
+ * @tparam FMT: SFPU DataFormat (sfpu_math): Int32, Int16, Int8, UInt16, UInt8, or a float format.
  * @tparam COMP_MODE: Comparison-to-zero mode, values =
  *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
  * @tparam ITERATIONS: Number of SFP-row pairs to process (8 for a 32×16 face).

@@ -110,8 +110,14 @@ void call_zero_comp_operation_quasar(std::uint32_t dst_index, DataFormat sfpu_fo
         case DataFormat::Int16:
             _llk_math_eltwise_unary_sfpu_params_(_calculate_zero_comp_<false, DataFormat::Int16, OPERATION, ITERATIONS>, dst_index);
             break;
+        case DataFormat::Int8:
+            _llk_math_eltwise_unary_sfpu_params_(_calculate_zero_comp_<false, DataFormat::Int8, OPERATION, ITERATIONS>, dst_index);
+            break;
         case DataFormat::UInt16:
             _llk_math_eltwise_unary_sfpu_params_(_calculate_zero_comp_<false, DataFormat::UInt16, OPERATION, ITERATIONS>, dst_index);
+            break;
+        case DataFormat::UInt8:
+            _llk_math_eltwise_unary_sfpu_params_(_calculate_zero_comp_<false, DataFormat::UInt8, OPERATION, ITERATIONS>, dst_index);
             break;
         default:
             // Float16 / Float16_b / Float32 — width-agnostic float path.
