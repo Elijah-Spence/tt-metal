@@ -4,12 +4,19 @@
 
 #include "dprint_parser.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <functional>
+#include <iomanip>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <enchantum/enchantum.hpp>
 #include <enchantum/scoped.hpp>
@@ -24,6 +31,7 @@
 
 #include "elf_file.hpp"
 #include "dwarf_die.hpp"
+#include "callstack.hpp"
 
 using std::string;
 using namespace std::literals;
@@ -60,6 +68,12 @@ inline float make_float(uint8_t exp_bit_count, uint8_t mantissa_bit_count, uint3
 }
 
 std::map<std::string, std::weak_ptr<DevicePrintParser>> DevicePrintParser::parser_cache;
+
+struct CallstackFrame {
+    std::string function;
+    std::optional<std::string> file;
+    std::optional<size_t> line = 0;
+};
 
 template <uint8_t PointerSize>
 class DevicePrintParserImpl : public DevicePrintParser {
@@ -106,6 +120,8 @@ private:
         std::size_t arguments_size{};
     };
 
+    using CallstackFrame = ::tt::tt_metal::CallstackFrame;
+
     ParsedStringInfo* get_string_info(uint32_t info_id);
 
     std::size_t get_argument_size_from_type_id(char type_id) const;
@@ -127,6 +143,9 @@ private:
         ParsedStringInfo& string_info, std::span<const std::byte> payload_bytes, FormatMessageBuffer& buffer);
 
     const EnumInfo* get_enum_info(std::string_view type_name);
+
+    std::vector<CallstackFrame> resolve_top_callstack(const TopCallstackInfo& info);
+    void format_top_callstack(fmt::memory_buffer& out, const TopCallstackInfo& info);
 
     std::string elf_path;
     ttexalens::native_elf::ElfFile elf_file;
@@ -878,6 +897,12 @@ std::string_view DevicePrintParserImpl<PointerSize>::format_message(
                 fmt::format_to(std::back_inserter(buffer.buffer), "0x{:x}", ptr_val);
                 break;
             }
+            case 'c': [[fallthrough]];
+            case 'C': {
+                const auto& info = std::get<TopCallstackInfo>(buffer.argument_values[placeholder.arg_id]);
+                format_top_callstack(buffer.buffer, info);
+                break;
+            }
             default: TT_THROW("Unsupported type_id in format placeholder (format_message): {}", placeholder.type_id);
         }
     }
@@ -956,6 +981,20 @@ DevicePrintParser::ArgumentValue DevicePrintParserImpl<PointerSize>::read_argume
             }
             return arr;
         }
+        case 'c': {
+            TopCallstackInfo info;
+            info.pc = read_value_from_payload<uint32_t>(payload_bytes, offset);
+            info.ra = read_value_from_payload<uint32_t>(payload_bytes, offset);
+            info.skip_frames = read_value_from_payload<uint32_t>(payload_bytes, offset);
+            return info;
+        }
+        case 'C': {
+            TopCallstackInfo info;
+            info.pc = read_value_from_payload<uint64_t>(payload_bytes, offset);
+            info.ra = read_value_from_payload<uint64_t>(payload_bytes, offset);
+            info.skip_frames = read_value_from_payload<uint64_t>(payload_bytes, offset);
+            return info;
+        }
         case 's':  // string pointer (resolved from ELF section if possible, else hex)
         case 'p':  // generic pointer
             return read_value_from_payload<pointer_t>(payload_bytes, offset);
@@ -1015,6 +1054,137 @@ const typename DevicePrintParserImpl<PointerSize>::EnumInfo* DevicePrintParserIm
     }
     auto inserted = enum_info_cache_.emplace(std::string(type_name), std::move(info));
     return &inserted.first->second;
+}
+
+// Kernel entry points where unwinding stops: a stack that reaches one of these has been fully
+// unwound to the kernel boundary.
+static bool is_terminal(const std::string& function) {
+    return function == "kernel_main" || function == "run_kernel" || function == "main" || function == "_start";
+}
+
+template <uint8_t PointerSize>
+std::vector<typename DevicePrintParserImpl<PointerSize>::CallstackFrame>
+DevicePrintParserImpl<PointerSize>::resolve_top_callstack(const TopCallstackInfo& info) {
+    using ttexalens::native_elf::CallstackEntry;
+
+    std::vector<CallstackFrame> callstack;
+
+    // No DWARF info (stripped binary, parse failure) — nothing to resolve.
+    if (elf_file.get_dwarf_info() == nullptr) {
+        callstack.push_back({"", std::nullopt, std::nullopt});
+        return callstack;
+    }
+
+    // The device sends PC/RA as offsets from the kernel's loaded text base (the kernel offset is
+    // subtracted on device). Re-anchor to the ELF's static .text address for the DWARF lookups.
+    const uint64_t text_start = elf_file.get_code_load_address();
+
+    // get_frame_callstack consults a list of ELF images; we only have the one kernel image.
+    const std::vector<ttexalens::native_elf::ElfFile> elfs = {elf_file};
+
+    // The device leaves the UINTMAX sentinel when PC/RA wasn't captured.
+    const auto is_invalid_address = [](uint64_t addr) { return addr == UINT32_MAX || addr == UINT64_MAX; };
+
+    // Resolves one device address into its inline chain (innermost frame first). get_frame_callstack
+    // returns the real function covering the address followed by the inlined virtual frames it
+    // expands into, with source locations already following backtrace semantics (the innermost frame
+    // shows the line at the address; each outer frame shows its inner callee's call site).
+    const auto resolve = [&](uint64_t offset) {
+        std::vector<CallstackFrame> out;
+        if (is_invalid_address(offset)) {
+            return out;
+        }
+        const uint64_t address = text_start + offset;
+        for (CallstackEntry& entry :
+             ttexalens::native_elf::get_frame_callstack(elfs, address, /*extract_variables=*/false)) {
+            CallstackFrame frame;
+            frame.function = entry.function_name.value_or("");
+            if (entry.file_info.has_value()) {
+                frame.file = entry.file_info->file;
+                frame.line = entry.file_info->line;
+            }
+            out.push_back(std::move(frame));
+        }
+        return out;
+    };
+
+    auto pc_frames = resolve(info.pc);
+    const bool pc_resolved_any = !pc_frames.empty();
+    const bool pc_terminate = pc_resolved_any && is_terminal(pc_frames.back().function);
+
+    // Drop the innermost sanitizer-internal frames the caller asked to hide. The skip count is
+    // applied to the innermost frames first (the PC chain); if it exceeds the PC chain it
+    // overflows into the RA chain spliced on below.
+    size_t skip = info.skip_frames;
+    const size_t pc_skip = std::min(skip, pc_frames.size());
+    pc_frames.erase(pc_frames.begin(), pc_frames.begin() + pc_skip);
+    skip -= pc_skip;
+    callstack = std::move(pc_frames);
+
+    // PC's chain already implies the full call stack (user code is heavily inlined into
+    // kernel_main). RA is the return address into the PC subprogram's caller; the device rewinds it
+    // to point at the call instruction, so its chain is concatenated on top — minus any skip count
+    // left over from the PC chain.
+    if (pc_resolved_any && !pc_terminate && !is_invalid_address(info.ra)) {
+        auto ra_frames = resolve(info.ra);
+        const size_t ra_skip = std::min(skip, ra_frames.size());
+        for (size_t i = ra_skip; i < ra_frames.size(); ++i) {
+            callstack.push_back(std::move(ra_frames[i]));
+        }
+    }
+
+    // Truncate at the first terminal frame (inclusive). If none is present the stack couldn't be
+    // fully unwound — append a "..." placeholder so the truncation is explicit rather than looking
+    // like a complete stack.
+    bool reached_entry = false;
+    for (size_t i = 0; i < callstack.size(); ++i) {
+        if (is_terminal(callstack[i].function)) {
+            callstack.resize(i + 1);
+            reached_entry = true;
+            break;
+        }
+    }
+    if (!reached_entry) {
+        callstack.push_back({});  // empty function name marks the "stack truncated" (...) frame
+    }
+
+    return callstack;
+}
+
+template <uint8_t PointerSize>
+void DevicePrintParserImpl<PointerSize>::format_top_callstack(fmt::memory_buffer& out, const TopCallstackInfo& info) {
+    auto sink = std::back_inserter(out);
+
+    // Renders the resolved callstack as a tree, innermost frame first. Every real frame
+    // contributes two lines — the function name, then its source location:
+    //   "│  ├──┬ FUNC\r"
+    //   "│  │  └ FILE:LINE\r"
+    // The outermost real frame uses the └ connector and drops the trailing │. When the stack
+    // couldn't be fully unwound, resolve_top_callstack appends a "..." frame (always last),
+    // which renders as a closing leaf:
+    //   "│  └ ...\r"
+    const auto stack = resolve_top_callstack(info);
+
+    for (size_t idx = 0; idx < stack.size(); ++idx) {
+        const CallstackFrame& frame = stack[idx];
+        const bool last = (idx + 1 == stack.size());
+
+        if (last && frame.function.empty()) {
+            fmt::format_to(sink, "│  └ ...\r");
+            continue;
+        }
+
+        fmt::format_to(sink, "│  {}──┬ {}\r", last ? "└" : "├", frame.function.empty() ? "<unknown>" : frame.function);
+        // The file:line continuation column drops the │ on the last (outermost) frame.
+        const char* cont = last ? "   " : "│  ";
+        if (!frame.file) {
+            fmt::format_to(sink, "│  {}└ <unknown>\r", cont);
+        } else {
+            fmt::format_to(sink, "│  {}└ {}:{}\r", cont, *frame.file, frame.line.value_or(0));
+        }
+    }
+
+    fmt::format_to(sink, "│");
 }
 
 }  // namespace tt::tt_metal
