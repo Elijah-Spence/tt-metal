@@ -147,8 +147,8 @@ inline void llk_math_wait_for_dest_available() {
     _llk_math_wait_for_dest_available_();
 
     if (llk_math_has_unpack_to_dest_32b()) {
-        _llk_sync_wait_<p_stall::STALL_MATH | p_stall::STALL_SFPU | p_stall::STALL_SYNC>(
-            semaphore::UNPACK_MATH, p_stall::STALL_ON_ZERO);
+        _llk_sync_wait_<p_stall::STALL_MATH | p_stall::STALL_SFPU | p_stall::STALL_SYNC, p_stall::STALL_ON_ZERO>(
+            semaphore::UNPACK_MATH);
         _llk_sync_get_(semaphore::UNPACK_MATH);
     }
 }

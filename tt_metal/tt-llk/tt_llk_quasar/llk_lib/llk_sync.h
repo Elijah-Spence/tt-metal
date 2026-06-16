@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 #include "ckernel_trisc_common.h"
 using namespace ckernel;
@@ -43,18 +44,26 @@ inline void _llk_sync_init_(std::uint8_t sem_index, std::uint32_t max, std::uint
 }
 
 /**
- * @brief Block on semaphore `sem_index` until it satisfies `condition`.
+ * @brief Block until every listed semaphore satisfies `Condition`.
  *
- * @tparam StallRes  Resource the calling thread holds while blocked
- *                   (e.g. p_stall::STALL_UNPACK).
- * @param sem_index  Semaphore id in range [0, 7].
- * @param condition  Wait predicate, typically p_stall::STALL_ON_ZERO
- *                   (wait > 0) or p_stall::STALL_ON_MAX (wait < max).
+ * One or more semaphore indices are combined into a single SEMWAIT mask, so a
+ * multi-index wait costs one instruction (and one stall) instead of one per
+ * semaphore. The shared `Condition` gates all of them: the thread is released
+ * only once every selected semaphore satisfies it.
+ *
+ * @tparam StallRes   Resource the calling thread holds while blocked
+ *                    (e.g. p_stall::STALL_UNPACK).
+ * @tparam Condition  Wait predicate, typically p_stall::STALL_ON_ZERO
+ *                    (wait > 0) or p_stall::STALL_ON_MAX (wait < max).
+ * @param  sem_index  One or more semaphore ids. They must all live in the same
+ *                    bank of 8 (sem_bank_sel = 0, i.e. indices in [0, 7]).
  */
-template <std::uint32_t StallRes>
-inline void _llk_sync_wait_(std::uint8_t sem_index, std::uint32_t condition)
+template <std::uint32_t StallRes, std::uint32_t Condition, typename... Idx>
+inline void _llk_sync_wait_(Idx... sem_index)
 {
-    TT_SEMWAIT(StallRes, condition, 0, semaphore::t6_sem(sem_index));
+    static_assert(sizeof...(Idx) > 0, "at least one semaphore index required");
+    static_assert((std::is_integral_v<Idx> && ...), "semaphore indices must be integral");
+    TT_SEMWAIT(StallRes, Condition, 0, (semaphore::t6_sem(sem_index) | ...));
 }
 
 /**

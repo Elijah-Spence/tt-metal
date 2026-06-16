@@ -256,8 +256,7 @@ inline void _llk_unpack_unary_operand_(const std::uint32_t l1_tile_idx, const st
             // Without an extra wait on MATH_PACK, unpack could race 2N iterations ahead of pack
             // and overwrite a bank that pack has not read yet. Waiting on both keeps unpack
             // within N iterations of pack.
-            _llk_sync_wait_<p_stall::STALL_UNPACK>(semaphore::MATH_PACK, p_stall::STALL_ON_MAX);
-            _llk_sync_wait_<p_stall::STALL_UNPACK>(semaphore::UNPACK_MATH, p_stall::STALL_ON_MAX);
+            _llk_sync_wait_<p_stall::STALL_UNPACK, p_stall::STALL_ON_MAX>(semaphore::MATH_PACK, semaphore::UNPACK_MATH);
 
             // UNP_DEST is driven off the UNP_A bank's counters.
             TT_SET_SRC_TILE_FACE_ROW_IDX(p_set_inc_sel::TILE_SEL, p_unpacr::UNP_A, l1_tile_idx);
