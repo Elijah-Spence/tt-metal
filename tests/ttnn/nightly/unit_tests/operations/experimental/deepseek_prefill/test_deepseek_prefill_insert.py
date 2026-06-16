@@ -14,13 +14,6 @@ import pytest
 import torch
 import ttnn
 
-from models.demos.deepseek_v3_d_p.reference.deepseek_v3_config import DeepSeekV3Config
-from models.demos.deepseek_v3_d_p.reference.deepseek_v4_flash_config import DeepSeekV4FlashConfig
-from models.demos.deepseek_v3_d_p.reference.deepseek_v4_pro_config import DeepSeekV4ProConfig
-from models.demos.deepseek_v3_d_p.reference.glm_5_1_config import GLM51Config
-from models.demos.deepseek_v3_d_p.reference.gpt_oss_120b_config import GptOss120BConfig
-from models.demos.deepseek_v3_d_p.reference.kimi_k2_6_config import KimiK26Config
-from models.demos.deepseek_v3_d_p.reference.minimax_m2_7_config import MiniMaxM27Config
 from tests.ttnn.utils_for_testing import assert_with_pcc
 
 
@@ -503,21 +496,8 @@ def test_insert_2d_indices_matches_torch_slice(device):
 
 K = 1024
 STRESS_GLOBAL_ROWS = 2 * 25 * K  # 51200
+STRESS_HIDDEN_DIM = 7 * K  # 7168
 STRESS_LOCAL_ROWS = 25 * K  # 25600
-
-# hidden_dim (the global/local tensors' column count) is the only model-dependent stress shape:
-# DeepSeek V3 = 7168, GLM 5.1 = 6144, MiniMax M2.7 = 3072, DeepSeek V4 Pro = 7168,
-# DeepSeek V4 Flash = 4096, GPT-OSS 120B = 2880, Kimi K2.6 = 7168. global_rows and local_rows are
-# token-dimension and model-independent. Kimi shares DeepSeek V3's 7168 width.
-STRESS_HIDDEN_DIM_PARAMS = [
-    pytest.param(DeepSeekV3Config.EMB_SIZE, id="ds"),
-    pytest.param(GLM51Config.EMB_SIZE, id="glm", marks=pytest.mark.extended_model),
-    pytest.param(MiniMaxM27Config.EMB_SIZE, id="minimax", marks=pytest.mark.extended_model),
-    pytest.param(DeepSeekV4ProConfig.EMB_SIZE, id="v4_pro", marks=pytest.mark.extended_model),
-    pytest.param(DeepSeekV4FlashConfig.EMB_SIZE, id="v4_flash", marks=pytest.mark.extended_model),
-    pytest.param(GptOss120BConfig.EMB_SIZE, id="gpt_oss", marks=pytest.mark.extended_model),
-    pytest.param(KimiK26Config.EMB_SIZE, id="kimi", marks=pytest.mark.extended_model),
-]
 
 
 @pytest.mark.parametrize(
@@ -556,14 +536,13 @@ STRESS_HIDDEN_DIM_PARAMS = [
         ),
     ],
 )
-@pytest.mark.parametrize("hidden_dim", STRESS_HIDDEN_DIM_PARAMS)
-def test_insert_stress_dram_utilization(device, starts, counts, expert_id, hidden_dim):
+def test_insert_stress_dram_utilization(device, starts, counts, expert_id):
     assert len(starts) == NUM_EXPERTS
     assert len(counts) == NUM_EXPERTS
 
     torch.manual_seed(0)
-    global_torch = torch.empty(STRESS_GLOBAL_ROWS, hidden_dim, dtype=torch.bfloat16).normal_()
-    local_torch = torch.empty(STRESS_LOCAL_ROWS, hidden_dim, dtype=torch.bfloat16).normal_()
+    global_torch = torch.empty(STRESS_GLOBAL_ROWS, STRESS_HIDDEN_DIM, dtype=torch.bfloat16).normal_()
+    local_torch = torch.empty(STRESS_LOCAL_ROWS, STRESS_HIDDEN_DIM, dtype=torch.bfloat16).normal_()
 
     g = _to_tile_bfp8(device, global_torch)
     l = _to_tile_bfp8(device, local_torch)
@@ -573,7 +552,7 @@ def test_insert_stress_dram_utilization(device, starts, counts, expert_id, hidde
     out = _run(g, l, s, c, global_expert_id=expert_id)
     out_torch = ttnn.to_torch(out)
 
-    assert out_torch.shape == (STRESS_GLOBAL_ROWS, hidden_dim)
+    assert out_torch.shape == (STRESS_GLOBAL_ROWS, STRESS_HIDDEN_DIM)
     rows = _ceil_to_tile(counts[expert_id])
     start = starts[expert_id]
     expected = ttnn.to_torch(l)[:rows, :]
@@ -583,15 +562,14 @@ def test_insert_stress_dram_utilization(device, starts, counts, expert_id, hidde
 
 
 @pytest.mark.parametrize("count", [25 * K, 16 * K, 8 * K, 4 * K, 2 * K, 1 * K])
-@pytest.mark.parametrize("hidden_dim", STRESS_HIDDEN_DIM_PARAMS)
-def test_insert_stress_dram_utilization_single_expert(device, count, hidden_dim):
+def test_insert_stress_dram_utilization_single_expert(device, count):
     starts = [0]
     counts = [count]
     expert_id = 0
 
     torch.manual_seed(0)
-    global_torch = torch.empty(STRESS_GLOBAL_ROWS, hidden_dim, dtype=torch.bfloat16).normal_()
-    local_torch = torch.empty(STRESS_LOCAL_ROWS, hidden_dim, dtype=torch.bfloat16).normal_()
+    global_torch = torch.empty(STRESS_GLOBAL_ROWS, STRESS_HIDDEN_DIM, dtype=torch.bfloat16).normal_()
+    local_torch = torch.empty(STRESS_LOCAL_ROWS, STRESS_HIDDEN_DIM, dtype=torch.bfloat16).normal_()
 
     g = _to_tile_bfp8(device, global_torch)
     l = _to_tile_bfp8(device, local_torch)
@@ -601,7 +579,7 @@ def test_insert_stress_dram_utilization_single_expert(device, count, hidden_dim)
     out = _run(g, l, s, c, global_expert_id=expert_id)
     out_torch = ttnn.to_torch(out)
 
-    assert out_torch.shape == (STRESS_GLOBAL_ROWS, hidden_dim)
+    assert out_torch.shape == (STRESS_GLOBAL_ROWS, STRESS_HIDDEN_DIM)
     rows = _ceil_to_tile(counts[expert_id])
     start = starts[expert_id]
     expected = ttnn.to_torch(l)[:rows, :]

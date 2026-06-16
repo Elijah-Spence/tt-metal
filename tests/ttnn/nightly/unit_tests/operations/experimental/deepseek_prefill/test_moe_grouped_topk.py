@@ -16,7 +16,6 @@ from loguru import logger
 import ttnn
 from models.demos.deepseek_v3.reference.configuration_deepseek import DeepseekV3Config
 from models.demos.deepseek_v3.reference.modeling_deepseek import MoEGate
-from models.demos.deepseek_v3_d_p.reference.kimi_k2_6_config import KimiK26Config
 from models.demos.deepseek_v3_d_p.tt.moe.validation_helpers import calculate_average_recall
 from tests.ttnn.utils_for_testing import comp_pcc
 

@@ -213,91 +213,32 @@ def test_ttnn_reduce(mesh_device, seq_len, emb_dim, topk, use_weights):
     run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
 
 
-# DeepSeek V3 reduce shape (emb 7168, topk = num_experts_per_tok).
+# Per-model reduce shapes as (id_prefix, config, extended_model). Each model uses seq_len 3200 and
+# topk = NUM_EXPERTS_PER_TOKEN at its own emb_dim. DeepSeek V3 is the baseline and runs by default;
+# every other model is gated behind @pytest.mark.extended_model.
+REDUCE_MODELS = [
+    ("ds", DeepSeekV3Config, False),
+    ("glm", GLM51Config, True),
+    ("kimi", KimiK26Config, True),
+    ("minimax", MiniMaxM27Config, True),
+    ("v4_pro", DeepSeekV4ProConfig, True),
+    ("v4_flash", DeepSeekV4FlashConfig, True),
+    ("gpt_oss", GptOss120BConfig, True),
+]
+
+
+def reduce_shape_params():
+    """Build the per-model (seq_len, emb_dim, topk) parametrization. Non-baseline models carry the
+    extended_model marker on their params so they stay gated exactly as the separate tests were."""
+    params = []
+    for name, config, extended in REDUCE_MODELS:
+        marks = (pytest.mark.extended_model,) if extended else ()
+        params.append(pytest.param(3200, config.EMB_SIZE, config.NUM_EXPERTS_PER_TOKEN, marks=marks, id=name))
+    return params
+
+
 @pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.NUM_EXPERTS_PER_TOKEN)],
-    ids=["ds"],
-)
+@pytest.mark.parametrize("seq_len, emb_dim, topk", reduce_shape_params())
 @pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-def test_ttnn_reduce_ds(mesh_device, seq_len, emb_dim, topk, use_weights):
-    run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
-
-
-# GLM 5.1 reduce shape (emb 6144, topk = num_experts_per_tok).
-@pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, GLM51Config.EMB_SIZE, GLM51Config.NUM_EXPERTS_PER_TOKEN)],
-    ids=["glm"],
-)
-@pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-@pytest.mark.extended_model
-def test_ttnn_reduce_glm(mesh_device, seq_len, emb_dim, topk, use_weights):
-    run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
-
-
-# Kimi K2.6 reduce shape (emb 7168, topk = num_experts_per_tok).
-@pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, KimiK26Config.EMB_SIZE, KimiK26Config.NUM_EXPERTS_PER_TOKEN)],
-    ids=["kimi"],
-)
-@pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-@pytest.mark.extended_model
-def test_ttnn_reduce_kimi(mesh_device, seq_len, emb_dim, topk, use_weights):
-    run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
-
-
-# MiniMax M2.7 reduce shape (emb 3072, topk = num_experts_per_tok).
-@pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, MiniMaxM27Config.EMB_SIZE, MiniMaxM27Config.NUM_EXPERTS_PER_TOKEN)],
-    ids=["minimax"],
-)
-@pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-@pytest.mark.extended_model
-def test_ttnn_reduce_minimax(mesh_device, seq_len, emb_dim, topk, use_weights):
-    run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
-
-
-# DeepSeek V4 Pro reduce shape (emb 7168, topk = num_experts_per_tok).
-@pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, DeepSeekV4ProConfig.EMB_SIZE, DeepSeekV4ProConfig.NUM_EXPERTS_PER_TOKEN)],
-    ids=["v4_pro"],
-)
-@pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-@pytest.mark.extended_model
-def test_ttnn_reduce_v4_pro(mesh_device, seq_len, emb_dim, topk, use_weights):
-    run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
-
-
-# DeepSeek V4 Flash reduce shape (emb 4096, topk = num_experts_per_tok).
-@pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, DeepSeekV4FlashConfig.EMB_SIZE, DeepSeekV4FlashConfig.NUM_EXPERTS_PER_TOKEN)],
-    ids=["v4_flash"],
-)
-@pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-@pytest.mark.extended_model
-def test_ttnn_reduce_v4_flash(mesh_device, seq_len, emb_dim, topk, use_weights):
-    run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)
-
-
-# GPT-OSS 120B reduce shape (emb 2880, topk = num_experts_per_tok).
-@pytest.mark.parametrize("use_weights", [True, False], ids=["weighted", "unweighted"])
-@pytest.mark.parametrize(
-    "seq_len, emb_dim, topk",
-    [(3200, GptOss120BConfig.EMB_SIZE, GptOss120BConfig.NUM_EXPERTS_PER_TOKEN)],
-    ids=["gpt_oss"],
-)
-@pytest.mark.parametrize("mesh_device, device_params", REDUCE_MESH_PARAMS, indirect=["mesh_device", "device_params"])
-@pytest.mark.extended_model
-def test_ttnn_reduce_gpt_oss(mesh_device, seq_len, emb_dim, topk, use_weights):
+def test_ttnn_reduce_models(mesh_device, seq_len, emb_dim, topk, use_weights):
     run_reduce(mesh_device, seq_len, emb_dim, topk, use_weights)

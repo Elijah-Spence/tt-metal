@@ -386,34 +386,58 @@ def run_dispatch(
     logger.debug("✅ TTNN dispatch operation matches torch reference!")
 
 
-# DeepSeek V3 dispatch shapes (emb 7168). DeepSeek V3 671B deploys 256 routed experts across a
-# 32-chip Galaxy (8 experts/chip via num_routed_experts // num_devices); this op test runs on
-# at most 8 chips, so perf scales experts down by 32/8 = 4 to preserve that per-chip load. The
-# PCC param shrinks further (// 16 experts, half experts/token) to keep the full comparison
-# cheap. dispatch_buffer_capacity_factor is ceil(N/2) of the most conservative integer N such
-# that dgs*seq*N >= worst-case dispatch buffer; real traffic stays well under.
+# Per-model dispatch shapes as (id_prefix, config, extended_model). Each model contributes two
+# param sets sharing the same scaling rationale: these models deploy their routed experts across a
+# 32-chip Galaxy (experts/chip = NUM_ROUTED_EXPERTS // num_devices), but this op test runs on at
+# most 8 chips. The perf param scales experts down by 32/8 = 4 to preserve per-chip load; the PCC
+# param shrinks further (// 16 experts, half experts/token) to keep the full comparison cheap.
+# dispatch_buffer_capacity_factor is ceil(N/2) of the most conservative integer N such that
+# dgs*seq*N >= worst-case dispatch buffer; real traffic stays well under.
+#
+# DeepSeek V3 is the baseline shape and runs by default; every other model is gated behind
+# @pytest.mark.extended_model.
+DISPATCH_MODELS = [
+    ("ds", DeepSeekV3Config, False),
+    ("glm", GLM51Config, True),
+    ("kimi", KimiK26Config, True),
+    ("minimax", MiniMaxM27Config, True),
+    ("v4_pro", DeepSeekV4ProConfig, True),
+    ("v4_flash", DeepSeekV4FlashConfig, True),
+    ("gpt_oss", GptOss120BConfig, True),
+]
+
+
+def dispatch_shape_params():
+    """Build the per-model (shape, run_pcc_check) parametrization. Non-baseline models carry the
+    extended_model marker on their params so they stay gated exactly as the separate tests were."""
+    params = []
+    for name, config, extended in DISPATCH_MODELS:
+        marks = (pytest.mark.extended_model,) if extended else ()
+        # (seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok,
+        #  dispatch_buffer_capacity_factor, run_pcc_check)
+        params.append(
+            pytest.param(
+                32, config.EMB_SIZE, config.NUM_ROUTED_EXPERTS // 16, 4, 4, True, marks=marks, id=f"{name}-pcc"
+            )
+        )
+        params.append(
+            pytest.param(
+                3200,
+                config.EMB_SIZE,
+                config.NUM_ROUTED_EXPERTS // 4,
+                2,
+                8,
+                False,
+                marks=marks,
+                id=f"{name}-perf_no_pcc",
+            )
+        )
+    return params
+
+
 @pytest.mark.parametrize(
     "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            DeepSeekV3Config.EMB_SIZE,
-            DeepSeekV3Config.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            DeepSeekV3Config.EMB_SIZE,
-            DeepSeekV3Config.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
+    dispatch_shape_params(),
 )
 @pytest.mark.parametrize(
     "mesh_device, device_params, num_links, topology",
@@ -428,446 +452,7 @@ def run_dispatch(
 )
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
 @pytest.mark.parametrize("verbose", [False])
-def test_ttnn_dispatch_ds(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    input_layout,
-    use_fp8_output,
-    verbose,
-    run_pcc_check,
-):
-    run_dispatch(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        input_layout,
-        use_fp8_output,
-        verbose,
-        run_pcc_check,
-    )
-
-
-# GLM 5.1 dispatch shapes (emb 6144). GLM 5.1 deploys 256 routed experts across a 32-chip
-# Galaxy (8 experts/chip via num_routed_experts // num_devices); this op test runs on at most
-# 8 chips, so perf scales experts down by 32/8 = 4 to preserve that per-chip load. The PCC
-# param shrinks further (// 16 experts, half experts/token) to keep the full comparison cheap.
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            GLM51Config.EMB_SIZE,
-            GLM51Config.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            GLM51Config.EMB_SIZE,
-            GLM51Config.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "input_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["tile"],
-)
-@pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
-@pytest.mark.parametrize("verbose", [False])
-@pytest.mark.extended_model
-def test_ttnn_dispatch_glm(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    input_layout,
-    use_fp8_output,
-    verbose,
-    run_pcc_check,
-):
-    run_dispatch(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        input_layout,
-        use_fp8_output,
-        verbose,
-        run_pcc_check,
-    )
-
-
-# Kimi K2.6 dispatch shapes (emb 7168). Kimi K2.6 deploys 384 routed experts; this op test runs on
-# at most 8 chips, so the perf param scales experts down (// 4) and the PCC param shrinks further
-# (// 16, half experts/token) to keep the full comparison cheap. Single expert group, top-8; only
-# MoE shape is exercised here.
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            KimiK26Config.EMB_SIZE,
-            KimiK26Config.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            KimiK26Config.EMB_SIZE,
-            KimiK26Config.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "input_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["tile"],
-)
-@pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
-@pytest.mark.parametrize("verbose", [False])
-@pytest.mark.extended_model
-def test_ttnn_dispatch_kimi(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    input_layout,
-    use_fp8_output,
-    verbose,
-    run_pcc_check,
-):
-    run_dispatch(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        input_layout,
-        use_fp8_output,
-        verbose,
-        run_pcc_check,
-    )
-
-
-# MiniMax M2.7 dispatch shapes (emb 3072). MiniMax M2.7 deploys 256 routed experts across a
-# 32-chip Galaxy (8 experts/chip via num_routed_experts // num_devices); this op test runs on
-# at most 8 chips, so perf scales experts down by 32/8 = 4 to preserve that per-chip load. The
-# PCC param shrinks further (// 16 experts, half experts/token) to keep the full comparison
-# cheap. Only MoE shape is exercised here; MiniMax's GQA attention is irrelevant to dispatch.
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            MiniMaxM27Config.EMB_SIZE,
-            MiniMaxM27Config.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            MiniMaxM27Config.EMB_SIZE,
-            MiniMaxM27Config.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "input_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["tile"],
-)
-@pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
-@pytest.mark.parametrize("verbose", [False])
-@pytest.mark.extended_model
-def test_ttnn_dispatch_minimax(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    input_layout,
-    use_fp8_output,
-    verbose,
-    run_pcc_check,
-):
-    run_dispatch(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        input_layout,
-        use_fp8_output,
-        verbose,
-        run_pcc_check,
-    )
-
-
-# DeepSeek V4 Pro dispatch shapes (emb 7168). DeepSeek V4 Pro deploys 384 routed experts across a
-# 32-chip Galaxy (12 experts/chip via num_routed_experts // num_devices); this op test runs on at
-# most 8 chips, so perf scales experts down by 32/8 = 4 to preserve that per-chip load. The PCC
-# param shrinks further (// 16 experts, half experts/token) to keep the full comparison cheap.
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            DeepSeekV4ProConfig.EMB_SIZE,
-            DeepSeekV4ProConfig.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            DeepSeekV4ProConfig.EMB_SIZE,
-            DeepSeekV4ProConfig.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "input_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["tile"],
-)
-@pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
-@pytest.mark.parametrize("verbose", [False])
-@pytest.mark.extended_model
-def test_ttnn_dispatch_v4_pro(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    input_layout,
-    use_fp8_output,
-    verbose,
-    run_pcc_check,
-):
-    run_dispatch(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        input_layout,
-        use_fp8_output,
-        verbose,
-        run_pcc_check,
-    )
-
-
-# DeepSeek V4 Flash dispatch shapes (emb 4096). DeepSeek V4 Flash deploys 256 routed experts across
-# a 32-chip Galaxy (8 experts/chip via num_routed_experts // num_devices); this op test runs on at
-# most 8 chips, so perf scales experts down by 32/8 = 4 to preserve that per-chip load. The PCC
-# param shrinks further (// 16 experts, half experts/token) to keep the full comparison cheap.
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            DeepSeekV4FlashConfig.EMB_SIZE,
-            DeepSeekV4FlashConfig.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            DeepSeekV4FlashConfig.EMB_SIZE,
-            DeepSeekV4FlashConfig.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "input_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["tile"],
-)
-@pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
-@pytest.mark.parametrize("verbose", [False])
-@pytest.mark.extended_model
-def test_ttnn_dispatch_v4_flash(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    input_layout,
-    use_fp8_output,
-    verbose,
-    run_pcc_check,
-):
-    run_dispatch(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        input_layout,
-        use_fp8_output,
-        verbose,
-        run_pcc_check,
-    )
-
-
-# GPT-OSS 120B dispatch shapes (emb 2880). GPT-OSS 120B deploys 128 routed experts across a 32-chip
-# Galaxy (4 experts/chip via num_routed_experts // num_devices); this op test runs on at most 8
-# chips, so perf scales experts down by 32/8 = 4 to preserve that per-chip load. The PCC param
-# shrinks further (// 16 experts, half experts/token) to keep the full comparison cheap.
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
-    [
-        pytest.param(
-            32,
-            GptOss120BConfig.EMB_SIZE,
-            GptOss120BConfig.NUM_ROUTED_EXPERTS // 16,
-            4,
-            4,
-            True,
-            id="pcc",
-        ),
-        pytest.param(
-            3200,
-            GptOss120BConfig.EMB_SIZE,
-            GptOss120BConfig.NUM_ROUTED_EXPERTS // 4,
-            2,
-            8,
-            False,
-            id="perf_no_pcc",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "input_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["tile"],
-)
-@pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
-@pytest.mark.parametrize("verbose", [False])
-@pytest.mark.extended_model
-def test_ttnn_dispatch_gpt_oss(
+def test_ttnn_dispatch(
     mesh_device,
     seq_len_per_chip,
     emb_dim,

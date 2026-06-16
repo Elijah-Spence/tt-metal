@@ -155,100 +155,38 @@ def run_single_routed_expert(
     logger.debug("Test PASSED!")
 
 
-# DeepSeek V3 dims (emb 7168, hidden = MOE_INTERMEDIATE_SIZE 2048) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"ds-v3-{tag}" for _, tag in _TOKEN_SWEEP],
-)
+# Per-model dims as (id_prefix, config, extended_model), each run at its own (emb_dim,
+# MOE_INTERMEDIATE_SIZE). DeepSeek V3 is the baseline and runs by default; every other model is
+# gated behind @pytest.mark.extended_model.
+SINGLE_EXPERT_MODELS = [
+    ("ds-v3", DeepSeekV3Config, False),
+    ("minimax", MiniMaxM27Config, True),
+    ("glm", GLM51Config, True),
+    ("v4_pro", DeepSeekV4ProConfig, True),
+    ("v4_flash", DeepSeekV4FlashConfig, True),
+    ("gpt_oss", GptOss120BConfig, True),
+    ("kimi", KimiK26Config, True),
+]
+
+
+def single_routed_expert_token_sweep_params():
+    """Build the per-model (num_tokens, emb_dim, hidden_dim) parametrization over _TOKEN_SWEEP.
+    Non-baseline models carry the extended_model marker so they stay gated as before."""
+    params = []
+    for name, config, extended in SINGLE_EXPERT_MODELS:
+        marks = (pytest.mark.extended_model,) if extended else ()
+        for num_tokens, tag in _TOKEN_SWEEP:
+            params.append(
+                pytest.param(num_tokens, config.EMB_SIZE, config.MOE_INTERMEDIATE_SIZE, marks=marks, id=f"{name}-{tag}")
+            )
+    return params
+
+
+@pytest.mark.parametrize("num_tokens, emb_dim, hidden_dim", single_routed_expert_token_sweep_params())
 @pytest.mark.parametrize(
     "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
 )
-def test_single_routed_expert_ds(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
-    run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
-
-
-# MiniMax M2.7 dims (emb 3072, hidden = MOE_INTERMEDIATE_SIZE 1536) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, MiniMaxM27Config.EMB_SIZE, MiniMaxM27Config.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"minimax-{tag}" for _, tag in _TOKEN_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.extended_model
-def test_single_routed_expert_minimax(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
-    run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
-
-
-# GLM 5.1 dims (emb 6144, hidden = MOE_INTERMEDIATE_SIZE 2048) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, GLM51Config.EMB_SIZE, GLM51Config.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"glm-{tag}" for _, tag in _TOKEN_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.extended_model
-def test_single_routed_expert_glm(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
-    run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
-
-
-# DeepSeek V4 Pro dims (emb 7168, hidden = MOE_INTERMEDIATE_SIZE 3072) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, DeepSeekV4ProConfig.EMB_SIZE, DeepSeekV4ProConfig.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"v4_pro-{tag}" for _, tag in _TOKEN_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.extended_model
-def test_single_routed_expert_v4_pro(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
-    run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
-
-
-# DeepSeek V4 Flash dims (emb 4096, hidden = MOE_INTERMEDIATE_SIZE 2048) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, DeepSeekV4FlashConfig.EMB_SIZE, DeepSeekV4FlashConfig.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"v4_flash-{tag}" for _, tag in _TOKEN_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.extended_model
-def test_single_routed_expert_v4_flash(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
-    run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
-
-
-# GPT-OSS 120B dims (emb 2880, hidden = MOE_INTERMEDIATE_SIZE 2880) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, GptOss120BConfig.EMB_SIZE, GptOss120BConfig.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"gpt_oss-{tag}" for _, tag in _TOKEN_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.extended_model
-def test_single_routed_expert_gpt_oss(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
-    run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
-
-
-# Kimi K2.6 dims (emb 7168, hidden = MOE_INTERMEDIATE_SIZE 2048) across the token sweep.
-@pytest.mark.parametrize(
-    "num_tokens, emb_dim, hidden_dim",
-    [(n, KimiK26Config.EMB_SIZE, KimiK26Config.MOE_INTERMEDIATE_SIZE) for n, _ in _TOKEN_SWEEP],
-    ids=[f"kimi-{tag}" for _, tag in _TOKEN_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.extended_model
-def test_single_routed_expert_kimi(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
+def test_single_routed_expert_models(mesh_device, device_params, num_tokens: int, emb_dim: int, hidden_dim: int):
     run_single_routed_expert(mesh_device, device_params, num_tokens, emb_dim, hidden_dim)
 
 
@@ -355,146 +293,33 @@ def run_single_routed_expert_faked_token_count(
     assert not torch.isinf(tt_output_active).any(), "Active output contains Inf"
 
 
-# DeepSeek V3 dims (emb 7168, hidden = MOE_INTERMEDIATE_SIZE 2048) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [
-        (alloc, active, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.MOE_INTERMEDIATE_SIZE)
-        for alloc, active, _ in _FAKED_SWEEP
-    ],
-    ids=[f"ds-v3-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
+def single_routed_expert_faked_params():
+    """Build the per-model (allocated_tokens, active_tokens, emb_dim, hidden_dim) parametrization
+    over _FAKED_SWEEP. Reuses SINGLE_EXPERT_MODELS, so non-baseline models stay gated behind the
+    extended_model marker exactly as the separate tests were."""
+    params = []
+    for name, config, extended in SINGLE_EXPERT_MODELS:
+        marks = (pytest.mark.extended_model,) if extended else ()
+        for alloc, active, tag in _FAKED_SWEEP:
+            params.append(
+                pytest.param(
+                    alloc,
+                    active,
+                    config.EMB_SIZE,
+                    config.MOE_INTERMEDIATE_SIZE,
+                    marks=marks,
+                    id=f"{name}-{tag}",
+                )
+            )
+    return params
+
+
+@pytest.mark.parametrize("allocated_tokens, active_tokens, emb_dim, hidden_dim", single_routed_expert_faked_params())
 @pytest.mark.parametrize(
     "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
 )
 @pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-def test_single_routed_expert_faked_token_count_ds(
-    mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
-):
-    run_single_routed_expert_faked_token_count(
-        mesh_device, device_params, allocated_tokens, active_tokens, emb_dim, hidden_dim
-    )
-
-
-# MiniMax M2.7 dims (emb 3072, hidden = MOE_INTERMEDIATE_SIZE 1536) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [
-        (alloc, active, MiniMaxM27Config.EMB_SIZE, MiniMaxM27Config.MOE_INTERMEDIATE_SIZE)
-        for alloc, active, _ in _FAKED_SWEEP
-    ],
-    ids=[f"minimax-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-@pytest.mark.extended_model
-def test_single_routed_expert_faked_token_count_minimax(
-    mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
-):
-    run_single_routed_expert_faked_token_count(
-        mesh_device, device_params, allocated_tokens, active_tokens, emb_dim, hidden_dim
-    )
-
-
-# GLM 5.1 dims (emb 6144, hidden = MOE_INTERMEDIATE_SIZE 2048) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [(alloc, active, GLM51Config.EMB_SIZE, GLM51Config.MOE_INTERMEDIATE_SIZE) for alloc, active, _ in _FAKED_SWEEP],
-    ids=[f"glm-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-@pytest.mark.extended_model
-def test_single_routed_expert_faked_token_count_glm(
-    mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
-):
-    run_single_routed_expert_faked_token_count(
-        mesh_device, device_params, allocated_tokens, active_tokens, emb_dim, hidden_dim
-    )
-
-
-# DeepSeek V4 Pro dims (emb 7168, hidden = MOE_INTERMEDIATE_SIZE 3072) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [
-        (alloc, active, DeepSeekV4ProConfig.EMB_SIZE, DeepSeekV4ProConfig.MOE_INTERMEDIATE_SIZE)
-        for alloc, active, _ in _FAKED_SWEEP
-    ],
-    ids=[f"v4_pro-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-@pytest.mark.extended_model
-def test_single_routed_expert_faked_token_count_v4_pro(
-    mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
-):
-    run_single_routed_expert_faked_token_count(
-        mesh_device, device_params, allocated_tokens, active_tokens, emb_dim, hidden_dim
-    )
-
-
-# DeepSeek V4 Flash dims (emb 4096, hidden = MOE_INTERMEDIATE_SIZE 2048) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [
-        (alloc, active, DeepSeekV4FlashConfig.EMB_SIZE, DeepSeekV4FlashConfig.MOE_INTERMEDIATE_SIZE)
-        for alloc, active, _ in _FAKED_SWEEP
-    ],
-    ids=[f"v4_flash-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-@pytest.mark.extended_model
-def test_single_routed_expert_faked_token_count_v4_flash(
-    mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
-):
-    run_single_routed_expert_faked_token_count(
-        mesh_device, device_params, allocated_tokens, active_tokens, emb_dim, hidden_dim
-    )
-
-
-# GPT-OSS 120B dims (emb 2880, hidden = MOE_INTERMEDIATE_SIZE 2880) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [
-        (alloc, active, GptOss120BConfig.EMB_SIZE, GptOss120BConfig.MOE_INTERMEDIATE_SIZE)
-        for alloc, active, _ in _FAKED_SWEEP
-    ],
-    ids=[f"gpt_oss-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-@pytest.mark.extended_model
-def test_single_routed_expert_faked_token_count_gpt_oss(
-    mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
-):
-    run_single_routed_expert_faked_token_count(
-        mesh_device, device_params, allocated_tokens, active_tokens, emb_dim, hidden_dim
-    )
-
-
-# Kimi K2.6 dims (emb 7168, hidden = MOE_INTERMEDIATE_SIZE 2048) across the alloc/active sweep.
-@pytest.mark.parametrize(
-    "allocated_tokens, active_tokens, emb_dim, hidden_dim",
-    [(alloc, active, KimiK26Config.EMB_SIZE, KimiK26Config.MOE_INTERMEDIATE_SIZE) for alloc, active, _ in _FAKED_SWEEP],
-    ids=[f"kimi-{tag}" for _, _, tag in _FAKED_SWEEP],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params", SINGLE_CHIP_MESH_PARAMS, indirect=["mesh_device", "device_params"]
-)
-@pytest.mark.skipif(not is_blackhole(), reason="device-side count-aware sparsity is Blackhole-only")
-@pytest.mark.extended_model
-def test_single_routed_expert_faked_token_count_kimi(
+def test_single_routed_expert_faked_token_count_models(
     mesh_device, device_params, allocated_tokens: int, active_tokens: int, emb_dim: int, hidden_dim: int
 ):
     run_single_routed_expert_faked_token_count(

@@ -369,14 +369,54 @@ def run_dispatch_combine(
     logger.debug("✅ TTNN dispatch→combine round-trip matches input!")
 
 
-# Per-model round-trip entrypoints. Only emb_dim is model-dependent here; the round-trip is a
-# single always-on correctness case (no pcc/perf split), and its expert/topk/capacity tuning
-# (num_routed_experts = NUM_ROUTED_EXPERTS // 4, topk 2, capacity 2) is sized so the flat
-# dispatch buffer does not overflow — independent of the model.
+# Per-model round-trip entrypoints as (id_prefix, config, extended_model, layouts). Only emb_dim is
+# model-dependent here; the round-trip is a single always-on correctness case (no pcc/perf split),
+# and its expert/topk/capacity tuning (num_routed_experts = NUM_ROUTED_EXPERTS // 4, topk 2,
+# capacity 2) is sized so the flat dispatch buffer does not overflow — independent of the model.
+# DeepSeek V3 is the baseline (runs by default and exercises both TILE and ROW_MAJOR); every other
+# model is gated behind @pytest.mark.extended_model and only runs the TILE layout.
+DISPATCH_COMBINE_MODELS = [
+    (
+        "ds",
+        DeepSeekV3Config,
+        False,
+        [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile"), (ttnn.ROW_MAJOR_LAYOUT, "dispatched_buffer_row_major")],
+    ),
+    ("glm", GLM51Config, True, [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile")]),
+    ("kimi", KimiK26Config, True, [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile")]),
+    ("minimax", MiniMaxM27Config, True, [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile")]),
+    ("v4_pro", DeepSeekV4ProConfig, True, [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile")]),
+    ("v4_flash", DeepSeekV4FlashConfig, True, [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile")]),
+    ("gpt_oss", GptOss120BConfig, True, [(ttnn.TILE_LAYOUT, "dispatched_buffer_tile")]),
+]
+
+
+def dispatch_combine_shape_params():
+    """Build the per-model (shape, dispatched_buffer_layout) parametrization. Folding the layout in
+    here keeps ROW_MAJOR exercised only on DeepSeek V3, exactly as the separate tests did, while
+    non-baseline models carry the extended_model marker on their params."""
+    params = []
+    for name, config, extended, layouts in DISPATCH_COMBINE_MODELS:
+        marks = (pytest.mark.extended_model,) if extended else ()
+        for layout, layout_id in layouts:
+            params.append(
+                pytest.param(
+                    3200,
+                    config.EMB_SIZE,
+                    config.NUM_ROUTED_EXPERTS // 4,
+                    2,
+                    2,
+                    layout,
+                    marks=marks,
+                    id=f"{name}-3200-avg-{layout_id}",
+                )
+            )
+    return params
+
+
 @pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
+    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, dispatched_buffer_layout",
+    dispatch_combine_shape_params(),
 )
 @pytest.mark.parametrize(
     "mesh_device, device_params, num_links, topology",
@@ -384,276 +424,7 @@ def run_dispatch_combine(
     indirect=["mesh_device", "device_params"],
 )
 @pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT, ttnn.ROW_MAJOR_LAYOUT],
-    ids=["dispatched_buffer_tile", "dispatched_buffer_row_major"],
-)
-def test_ttnn_dispatch_combine_ds(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    dispatched_buffer_layout,
-):
-    run_dispatch_combine(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        dispatched_buffer_layout,
-    )
-
-
-# GLM 5.1 round-trip shape (emb 6144).
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, GLM51Config.EMB_SIZE, GLM51Config.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["dispatched_buffer_tile"],
-)
-@pytest.mark.extended_model
-def test_ttnn_dispatch_combine_glm(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    dispatched_buffer_layout,
-):
-    run_dispatch_combine(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        dispatched_buffer_layout,
-    )
-
-
-# Kimi K2.6 round-trip shape (emb 7168).
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, KimiK26Config.EMB_SIZE, KimiK26Config.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["dispatched_buffer_tile"],
-)
-@pytest.mark.extended_model
-def test_ttnn_dispatch_combine_kimi(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    dispatched_buffer_layout,
-):
-    run_dispatch_combine(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        dispatched_buffer_layout,
-    )
-
-
-# MiniMax M2.7 round-trip shape (emb 3072).
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, MiniMaxM27Config.EMB_SIZE, MiniMaxM27Config.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["dispatched_buffer_tile"],
-)
-@pytest.mark.extended_model
-def test_ttnn_dispatch_combine_minimax(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    dispatched_buffer_layout,
-):
-    run_dispatch_combine(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        dispatched_buffer_layout,
-    )
-
-
-# DeepSeek V4 Pro round-trip shape (emb 7168).
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, DeepSeekV4ProConfig.EMB_SIZE, DeepSeekV4ProConfig.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["dispatched_buffer_tile"],
-)
-@pytest.mark.extended_model
-def test_ttnn_dispatch_combine_v4_pro(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    dispatched_buffer_layout,
-):
-    run_dispatch_combine(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        dispatched_buffer_layout,
-    )
-
-
-# DeepSeek V4 Flash round-trip shape (emb 4096).
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, DeepSeekV4FlashConfig.EMB_SIZE, DeepSeekV4FlashConfig.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["dispatched_buffer_tile"],
-)
-@pytest.mark.extended_model
-def test_ttnn_dispatch_combine_v4_flash(
-    mesh_device,
-    seq_len_per_chip,
-    emb_dim,
-    num_routed_experts,
-    num_experts_per_tok,
-    dispatch_buffer_capacity_factor,
-    num_links,
-    topology,
-    use_predictable_data,
-    dispatched_buffer_layout,
-):
-    run_dispatch_combine(
-        mesh_device,
-        seq_len_per_chip,
-        emb_dim,
-        num_routed_experts,
-        num_experts_per_tok,
-        dispatch_buffer_capacity_factor,
-        num_links,
-        topology,
-        use_predictable_data,
-        dispatched_buffer_layout,
-    )
-
-
-# GPT-OSS 120B round-trip shape (emb 2880).
-@pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor",
-    [(3200, GptOss120BConfig.EMB_SIZE, GptOss120BConfig.NUM_ROUTED_EXPERTS // 4, 2, 2)],
-    ids=["3200-avg"],
-)
-@pytest.mark.parametrize(
-    "mesh_device, device_params, num_links, topology",
-    ALL_MESH_CONFIGS,
-    indirect=["mesh_device", "device_params"],
-)
-@pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
-@pytest.mark.parametrize(
-    "dispatched_buffer_layout",
-    [ttnn.TILE_LAYOUT],
-    ids=["dispatched_buffer_tile"],
-)
-@pytest.mark.extended_model
-def test_ttnn_dispatch_combine_gpt_oss(
+def test_ttnn_dispatch_combine(
     mesh_device,
     seq_len_per_chip,
     emb_dim,
