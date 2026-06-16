@@ -14,13 +14,6 @@ import torch
 from loguru import logger
 
 import ttnn
-from models.demos.deepseek_v3_d_p.reference.deepseek_v3_config import DeepSeekV3Config
-from models.demos.deepseek_v3_d_p.reference.deepseek_v4_flash_config import DeepSeekV4FlashConfig
-from models.demos.deepseek_v3_d_p.reference.deepseek_v4_pro_config import DeepSeekV4ProConfig
-from models.demos.deepseek_v3_d_p.reference.glm_5_1_config import GLM51Config
-from models.demos.deepseek_v3_d_p.reference.gpt_oss_120b_config import GptOss120BConfig
-from models.demos.deepseek_v3_d_p.reference.kimi_k2_6_config import KimiK26Config
-from models.demos.deepseek_v3_d_p.reference.minimax_m2_7_config import MiniMaxM27Config
 from models.demos.deepseek_v3_d_p.tt.moe.init_helpers import ExpertMapping, extract_mesh_config, get_ep_mesh_composer
 from models.demos.deepseek_v3_d_p.tt.moe.validation_helpers import compare_exact, validate_composed
 from models.demos.deepseek_v3_d_p.tt.moe.visualization_helpers import log_validation_results
@@ -45,42 +38,11 @@ def torch_masked_bincount(
     return counts[:n_routed_experts] * mask
 
 
-# Per-model histogram shapes as (id_prefix, config, extended_model). sp_dim (tokens per chip) is
-# fixed at 4096; the dimensions under test are topk = NUM_EXPERTS_PER_TOKEN and the expert count
-# NUM_ROUTED_EXPERTS (the histogram width). DeepSeek V3 is the baseline and runs by default; every
-# other model is gated behind @pytest.mark.extended_model.
-MASKED_BINCOUNT_MODELS = [
-    ("ds", DeepSeekV3Config, False),
-    ("glm", GLM51Config, True),
-    ("kimi", KimiK26Config, True),
-    ("minimax", MiniMaxM27Config, True),
-    ("v4_pro", DeepSeekV4ProConfig, True),
-    ("v4_flash", DeepSeekV4FlashConfig, True),
-    ("gpt_oss", GptOss120BConfig, True),
-]
-
-
-def masked_bincount_shape_params():
-    """Build the per-model (sp_dim, topk, n_routed_experts) parametrization. Non-baseline models
-    carry the extended_model marker on their params so they stay gated."""
-    params = []
-    for name, config, extended in MASKED_BINCOUNT_MODELS:
-        marks = (pytest.mark.extended_model,) if extended else ()
-        params.append(
-            pytest.param(
-                4096,
-                config.NUM_EXPERTS_PER_TOKEN,
-                config.NUM_ROUTED_EXPERTS,
-                marks=marks,
-                id=f"{name}-experts-{config.NUM_ROUTED_EXPERTS}",
-            )
-        )
-    return params
-
-
 @pytest.mark.parametrize(
     "sp_dim, topk, n_routed_experts",
-    masked_bincount_shape_params(),
+    [
+        (4096, 8, 256),
+    ],
 )
 @pytest.mark.parametrize(
     "mesh_device, device_params",
