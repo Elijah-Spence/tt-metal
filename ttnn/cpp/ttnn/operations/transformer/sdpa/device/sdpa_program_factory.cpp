@@ -155,6 +155,11 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
     const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& tensor_return_value) {
+    // Windowed (block-diagonal) attention reuses the regular reader/writer/compute kernels. The mask is
+    // synthesized on-device in the writer from cu_window_seqlens (reader streams Q/K/V only) and consumed
+    // by the compute via the provided-mask path. Like regular SDPA it honors the streaming-vs-standard
+    // selection: streaming kernel when fp32_dest_acc_en is false (Blackhole default), standard otherwise.
+    const bool is_windowed = operation_attributes.is_windowed;
     const auto& input_tensor_q = tensor_args.q;
     const auto& input_tensor_k = tensor_args.k;
     const auto& input_tensor_v = tensor_args.v.value_or(tensor_args.k);
@@ -251,6 +256,9 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
     const bool use_provided_mask = attn_mask.has_value();
     const bool broadcast_provided_mask_batch = use_provided_mask ? (attn_mask.value().logical_shape()[0] == 1) : false;
     const bool broadcast_provided_mask_heads = use_provided_mask ? (attn_mask.value().logical_shape()[1] == 1) : false;
+    // Windowed mode synthesizes the mask in the writer; the compute consumes it through the provided-mask
+    // path even though there is no attn_mask tensor (and the reader does not read one).
+    const bool compute_use_provided_mask = use_provided_mask || is_windowed;
 
     // log_debug all of the above
     log_debug(tt::LogOp, "B: {}", B);
@@ -567,9 +575,14 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
         out_out_subblock_h,                            // arg 22: drain group height
         k_partial_col,                                 // arg 23: K partial-tile col (0 = no partial)
         static_cast<uint32_t>(use_zigzag_balancing),   // arg 24
+        static_cast<uint32_t>(is_windowed),            // arg 25: windowed block-diagonal mask generation
     };
 
+    // out accessor, then the cu_window accessor chained right after it (before the CB-id block) so the
+    // accessor offset chain stays intact. nullptr when not windowed (consistent placeholder).
     TensorAccessorArgs(output_tensor.buffer()).append_to(writer_compile_time_args);
+    TensorAccessorArgs(is_windowed ? tensor_args.cu_window_seqlens.value().buffer() : nullptr)
+        .append_to(writer_compile_time_args);
 
     std::vector<uint32_t> compute_compile_time_args = {
         // matmul args
@@ -597,7 +610,7 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
         out_num_blocks,
         num_cores,
         static_cast<uint32_t>(is_causal),
-        static_cast<uint32_t>(use_provided_mask),
+        static_cast<uint32_t>(compute_use_provided_mask),
         static_cast<uint32_t>(use_padded_mask),
         static_cast<uint32_t>(is_chunked),
         scale_packed,
@@ -630,7 +643,10 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
     tt::DataFormat q_df = tt::tt_metal::datatype_to_dataformat_converter(input_tensor_q.dtype());
     tt::DataFormat k_df = tt::tt_metal::datatype_to_dataformat_converter(input_tensor_k.dtype());
     tt::DataFormat v_df = tt::tt_metal::datatype_to_dataformat_converter(input_tensor_v.dtype());
-    tt::DataFormat mask_df = select_mask_dataformat(attn_mask, use_streaming_compute);
+    // Windowed mask is generated on-device. Float16_b so it works on both the streaming path (which does
+    // not decode block-float masks) and the standard path; windowed_mask_gen.hpp fills the right format.
+    tt::DataFormat mask_df =
+        is_windowed ? tt::DataFormat::Float16_b : select_mask_dataformat(attn_mask, use_streaming_compute);
     tt::DataFormat out_df = tt::tt_metal::datatype_to_dataformat_converter(output_tensor.dtype());
     tt::DataFormat scalar_df =
         (input_tensor_q.dtype() == DataType::FLOAT32) ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
@@ -681,7 +697,8 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
     cb_ids.k_in = allocate_tile_cb(k_tiles, k_tile_size, k_df);
     cb_ids.v_in = allocate_tile_cb(v_tiles, v_tile_size, v_df);
 
-    const bool needs_mask_cb = use_provided_mask || is_causal || use_padded_mask || sliding_window_size.value_or(0) > 0;
+    const bool needs_mask_cb =
+        use_provided_mask || is_causal || use_padded_mask || sliding_window_size.value_or(0) > 0 || is_windowed;
     // Only create mask buffer if it's going to be used.
     if (needs_mask_cb) {
         // Lightweight mask: Float16_b, mask_tiles already computed (1 for padding, 2 for causal).
@@ -689,6 +706,21 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
         tt::DataFormat actual_mask_df = lightweight_mask ? tt::DataFormat::Float16_b : mask_df;
         uint32_t actual_mask_tile_size = tt::tile_size(actual_mask_df);
         cb_ids.mask_in = allocate_tile_cb(mask_tiles, actual_mask_tile_size, actual_mask_df);
+    }
+
+    // Windowed: 1-tile CB holding cu_window_seqlens, loaded once by the writer. When NOT windowed, fall
+    // back to a valid CB id (q_in): the writer's windowed block is gated by `if constexpr`, but in a
+    // non-template function the discarded branch is still compiled, so get_tile_size/get_dataformat on
+    // this id must be well-formed (an inactive id would constexpr-fault on unpack_tile_size[-1]).
+    tt::tt_metal::Buffer* cu_window_buffer = nullptr;
+    uint32_t cu_window_seqlens_eles = 0;
+    cb_ids.cu_window_seqlens = cb_ids.q_in;
+    if (is_windowed) {
+        const auto& cu = tensor_args.cu_window_seqlens.value();
+        tt::DataFormat cu_df = tt::tt_metal::datatype_to_dataformat_converter(cu.dtype());
+        cb_ids.cu_window_seqlens = allocate_tile_cb(1, tt::tile_size(cu_df), cu_df);
+        cu_window_buffer = cu.buffer();
+        cu_window_seqlens_eles = cu.logical_shape()[-1];
     }
 
     cb_ids.identity_scale_in = allocate_tile_cb(scale_tiles, scalar_tile_size, scalar_df);
@@ -1354,7 +1386,9 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
              0u,                                               // 6: phase_2 chunk_start (unused, num_phases==1)
              0u,                                               // 7: phase_2 write_offset (unused, num_phases==1)
              global_q_start,                                   // 8
-             global_q_count});                                 // 9
+             global_q_count,                                   // 9
+             cu_window_buffer,                                 // 10: windowed mask src (nullptr if unused)
+             cu_window_seqlens_eles});                         // 11: window count + 1
 
         compute_desc.emplace_runtime_args(
             core,

@@ -17,7 +17,6 @@ file(
     GLOB_RECURSE kernels
     sdpa/device/kernels/*
     sdpa_decode/device/kernels/*
-    sdpa_windowed/device/kernels/*
 )
 target_sources(
     ttnn_op_transformer
@@ -31,7 +30,6 @@ target_sources(
             concatenate_heads/concatenate_heads.hpp
             sdpa/sdpa.hpp
             sdpa_decode/sdpa_decode.hpp
-            sdpa_windowed/sdpa_windowed.hpp
             split_query_key_value_and_split_heads/split_query_key_value_and_split_heads.hpp
         FILE_SET kernels
         TYPE HEADERS
