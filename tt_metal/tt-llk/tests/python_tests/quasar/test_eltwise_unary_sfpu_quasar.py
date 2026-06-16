@@ -370,11 +370,13 @@ def prepare_comp_inputs(
     input_torch_format = format_dict[input_format]
 
     # Integer formats (Int32 / Int16, both signed): comparison-to-zero only depends on sign and
-    # zero-ness, not magnitude. The default integer stimuli are non-negative with no exact zeros,
-    # so flip signs from src_B and seed a few exact zeros/extremes to exercise all six modes.
+    # zero-ness, not magnitude. The default integer stimuli are non-negative, so split src_B about
+    # its median to sign roughly half the lanes negative (spread across every face), then seed a few
+    # exact zeros/extremes to exercise all six modes.
     if not input_torch_format.is_floating_point:
         big = torch.iinfo(input_torch_format).max // 8
-        signs = torch.where(src_B.to(torch.float32) < 0.0, -1, 1)
+        src_B_float = src_B.to(torch.float32)
+        signs = torch.where(src_B_float < src_B_float.median(), -1, 1)
         values = (src_A.to(torch.int64) % big) * signs
 
         flat = values.flatten()
@@ -386,9 +388,10 @@ def prepare_comp_inputs(
     src_A_float = src_A.to(torch.float32)
     src_B_float = src_B.to(torch.float32)
 
-    # Magnitudes in a comfortably-representable range, signed by src_B.
+    # Magnitudes in a comfortably-representable range, signed by src_B. src_B is non-negative under
+    # the default spec, so split it about its median to sign roughly half the lanes negative.
     magnitudes = torch.clamp(torch.abs(src_A_float) * 0.5 + 0.5, 0.1, 100.0)
-    signs = torch.where(src_B_float < 0.0, -1.0, 1.0)
+    signs = torch.where(src_B_float < src_B_float.median(), -1.0, 1.0)
     values = signs * magnitudes
 
     flat = values.flatten()

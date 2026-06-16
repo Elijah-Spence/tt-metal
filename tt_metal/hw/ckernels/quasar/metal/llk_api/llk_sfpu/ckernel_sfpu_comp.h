@@ -45,14 +45,12 @@ inline constexpr bool _zero_comp_is_int_() {
  * (zero-extend on load, truncate on store). Float formats use DEFAULT, letting the HW resolve
  * fp16/bf16/fp32 from the format config.
  *
- * @note UInt16 has no native Quasar register-file/dest format (the emulator's UInt16 dest
- *       datapath round-trips corrupted, 0/1 read back as 0x400 = 1<<10). It is therefore driven
- *       through the Int16/SMAG16 container: unpack and pack run in Int16 (bit passthrough, the
- *       known-good 16-bit path) while only the SFPU loads/stores in UINT16 mode. A standalone
- *       SFPLOAD/SFPSTORE UINT16 identity experiment (test_sfpu_load_store_uint16_quasar) confirms
- *       the SFPU's uint16 load/store round-trips correctly, so the corruption lives purely in the
- *       unpack/pack/dest format path, which this routing sidesteps. The caller must keep the
- *       unpack/pack/math formats at Int16 and select FMT=UInt16 only to pick this sfpmem mode.
+ * @note UInt16 has no native Quasar register-file/dest format: its dest datapath corrupts the
+ *       round-trip (0/1 read back as 0x400 = 1<<10), while the SFPU's own UINT16 load/store is
+ *       correct. UInt16 is therefore routed through the Int16/SMAG16 container — unpack and pack
+ *       run in Int16 (bit passthrough, the known-good 16-bit path) and only the SFPU loads/stores
+ *       in UINT16 mode, which keeps the data off the broken dest-format path. The caller must keep
+ *       the unpack/pack/math formats at Int16 and select FMT=UInt16 only to pick this sfpmem mode.
  *
  * @tparam FMT: SFPU DataFormat.
  */
@@ -72,17 +70,19 @@ inline constexpr std::uint32_t _zero_comp_sfpmem_mode_() {
 /**
  * @brief Number of instructions in the recorded replay body for a comparison mode.
  *
- * Format-independent (Int32 and float bodies have identical instruction counts): eqz/nez are 7,
- * the strict ltz/gtz add an AND-combine SFPSETCC (8), and gez/lez OR-combine two tests (10).
+ * Format-independent (Int32 and float bodies have identical instruction counts): eqz/nez predicate
+ * with a single SFPSETCC (7). The strict ltz/gtz AND a second SFPSETCC (8). gtez/ltez are the
+ * lane-wise complements of ltz/gtz — they predicate the same strictly-signed lanes but default the
+ * result to 1 and write 0 — so they share the strict body's length (8).
  *
  * @tparam COMP_MODE: Comparison-to-zero mode selecting the body to record.
  * @return Recorded body length in instructions.
  */
 template <SfpuType COMP_MODE>
 inline constexpr std::uint32_t _zero_comp_replay_len_() {
-    if constexpr (COMP_MODE == SfpuType::greater_than_equal_zero || COMP_MODE == SfpuType::less_than_equal_zero) {
-        return 10;
-    } else if constexpr (COMP_MODE == SfpuType::less_than_zero || COMP_MODE == SfpuType::greater_than_zero) {
+    if constexpr (
+        COMP_MODE == SfpuType::less_than_zero || COMP_MODE == SfpuType::greater_than_zero ||
+        COMP_MODE == SfpuType::greater_than_equal_zero || COMP_MODE == SfpuType::less_than_equal_zero) {
         return 8;
     }
     return 7;
@@ -123,7 +123,7 @@ inline __attribute__((always_inline)) void _zero_comp_setcc_() {
  *
  * Integer formats use SFPLOADI SHORT (INT16), which sign-extends the immediate into the full LREG
  * (1 -> 0x0000_0001) for a clean result at any store width. SHORT is used rather than USHORT
- * (UINT16): USHORT left-shifts the immediate by 10 inside the LREG (see ckernel_sfpu_fill.h).
+ * (UINT16) because USHORT left-shifts the immediate by 10 inside the LREG.
  *
  * @tparam FMT: Math-side DataFormat; integer → integer 0/1, float → fp16b 0.0/1.0.
  * @tparam VALUE: false → 0, true → 1.
@@ -138,12 +138,29 @@ inline __attribute__((always_inline)) void _zero_comp_loadi_bool_() {
 }
 
 /**
- * @brief Emit the per-mode predication that loads 1 into the lanes satisfying COMP_MODE.
+ * @brief Result value every lane is defaulted to before COMP_MODE's predication runs.
  *
- * The SFPSETCC sequence is format-independent; FMT only selects the result encoding (via
- * @ref _zero_comp_loadi_bool_). Successive SFPSETCC calls AND-combine, so the strict ltz/gtz add
- * an NE0 test (excludes ±0); gez/lez OR-combine a sign test with the equal_zero test (covers the
- * opposite-signed zero), reusing equal_zero.
+ * eqz/nez/ltz/gtz default to 0 and write 1 into the matching lanes. gtez/ltez invert this: they
+ * default to 1 and write 0 into the strictly-signed lanes (the complement of ltz/gtz).
+ *
+ * @tparam COMP_MODE: Comparison-to-zero mode.
+ * @return true (lane default 1) for gtez/ltez, false (lane default 0) otherwise.
+ */
+template <SfpuType COMP_MODE>
+inline constexpr bool _zero_comp_default_() {
+    return COMP_MODE == SfpuType::greater_than_equal_zero || COMP_MODE == SfpuType::less_than_equal_zero;
+}
+
+/**
+ * @brief Predicate the lanes satisfying COMP_MODE and write the result into them.
+ *
+ * Successive SFPSETCC calls AND-combine and SFPLOADI writes only the currently predicated lanes;
+ * FMT selects the 1/0 encoding (via @ref _zero_comp_loadi_bool_), not the SFPSETCC sequence.
+ * eqz/nez use a single test and write 1. The strict ltz/gtz AND a sign test with NE0 (excluding
+ * ±0) and write 1. gtez/ltez are the lane-wise complements of ltz/gtz: the body defaults every
+ * lane to 1 (see @ref _zero_comp_default_), so they predicate the same strictly-signed lanes and
+ * write 0, leaving every other lane at 1. This folds the opposite-signed zero into the true set
+ * for free — the NE0 test already excludes ±0 from the strict set, so the complement includes it.
  *
  * @tparam FMT: Math-side DataFormat.
  * @tparam COMP_MODE: Comparison-to-zero mode, values =
@@ -189,31 +206,30 @@ struct zero_comp_fill<FMT, SfpuType::greater_than_zero> {
 template <DataFormat FMT>
 struct zero_comp_fill<FMT, SfpuType::greater_than_equal_zero> {
     static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_GTE0>();  // positive
-        _zero_comp_loadi_bool_<FMT, true>();
-        TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, sfpi::SFPENCC_MOD1_EI_RI);  // re-enable CC for the OR-combine
-        zero_comp_fill<FMT, SfpuType::equal_zero>::apply();               // OR == 0 (covers -0.0 for float)
+        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_LT0>();  // negative (sign set, incl -0)
+        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();  // AND nonzero -> strictly < 0
+        _zero_comp_loadi_bool_<FMT, false>();               // write 0 there; the >= 0 lanes keep the default 1
     }
 };
 
 template <DataFormat FMT>
 struct zero_comp_fill<FMT, SfpuType::less_than_equal_zero> {
     static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_LT0>();  // negative
-        _zero_comp_loadi_bool_<FMT, true>();
-        TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, sfpi::SFPENCC_MOD1_EI_RI);  // re-enable CC for the OR-combine
-        zero_comp_fill<FMT, SfpuType::equal_zero>::apply();               // OR == 0 (covers +0.0 for float)
+        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_GTE0>();  // positive (sign clear, incl +0)
+        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();   // AND nonzero -> strictly > 0
+        _zero_comp_loadi_bool_<FMT, false>();                // write 0 there; the <= 0 lanes keep the default 1
     }
 };
 
 /**
  * @brief Compute the comparison-to-zero boolean (1/0) for one SFP-row pair.
  *
- * Load x, default the result lane to 0, predicate the lanes that satisfy COMP_MODE (see
- * @ref zero_comp_fill), then store 1/0 unconditionally. FMT selects the sfpmem mode, the
- * SFPSETCC interpretation, and the 1/0 encoding. The SFPSTORE uses ADDR_MOD_6 (dest.incr=2) so
- * each replay advances the dest counter by one SFP-row pair while the load/store offsets stay
- * constant, letting the recorded instructions re-issue unchanged across iterations.
+ * Load x, default every result lane to COMP_MODE's wide value (0, or 1 for the gtez/ltez
+ * complement — see @ref _zero_comp_default_), predicate the lanes that satisfy COMP_MODE and write
+ * the opposite value into them (see @ref zero_comp_fill), then store unconditionally. FMT selects
+ * the sfpmem mode, the SFPSETCC interpretation, and the 1/0 encoding. The SFPSTORE uses ADDR_MOD_6
+ * (dest.incr=2) so each replay advances the dest counter by one SFP-row pair while the load/store
+ * offsets stay constant, letting the recorded instructions re-issue unchanged across iterations.
  *
  * @tparam FMT: Math-side DataFormat (Int32, Int16, UInt16, or a float format).
  * @tparam COMP_MODE: Comparison-to-zero mode, values =
@@ -224,7 +240,7 @@ inline __attribute__((always_inline)) void _zero_comp_body_() {
     constexpr std::uint32_t sfpmem = _zero_comp_sfpmem_mode_<FMT>();
 
     TTI_SFPLOAD(p_sfpu::LREG0, sfpmem, ADDR_MOD_7, 0 /* done */, 0 /* dest_reg */);  // load x from dest
-    _zero_comp_loadi_bool_<FMT, false>();                                            // result lane defaults to 0
+    _zero_comp_loadi_bool_<FMT, _zero_comp_default_<COMP_MODE>()>();  // result lanes default to COMP_MODE's wide value
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, sfpi::SFPENCC_MOD1_EI_RI);  // enable CC + result=1: all lanes active
 
     zero_comp_fill<FMT, COMP_MODE>::apply();
