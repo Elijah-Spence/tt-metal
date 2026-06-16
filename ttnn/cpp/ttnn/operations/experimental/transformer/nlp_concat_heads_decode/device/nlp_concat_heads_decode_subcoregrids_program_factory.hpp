@@ -6,12 +6,12 @@
 
 #include "nlp_concat_heads_decode_device_operation_types.hpp"
 #include "ttnn/device_operation.hpp"
-#include "ttnn/metal2_artifacts.hpp"
+#include "ttnn/metal_v2_artifacts.hpp"
 
 namespace ttnn::experimental::prim {
 
 struct NLPConcatHeadsDecodeSubcoregridsProgramFactory {
-    static ttnn::device_operation::ProgramArtifacts create_program_spec(
+    static ttnn::device_operation::ProgramArtifacts create_program_artifacts(
         const NlpConcatHeadsDecodeParams& operation_attributes,
         const NlpConcatHeadsDecodeInputs& tensor_args,
         Tensor& output);

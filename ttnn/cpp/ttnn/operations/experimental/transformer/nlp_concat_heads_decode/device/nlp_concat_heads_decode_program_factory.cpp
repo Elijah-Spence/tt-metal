@@ -20,7 +20,7 @@ using namespace tt::constants;
 using namespace tt::tt_metal;
 using namespace tt::tt_metal::experimental;
 
-ttnn::device_operation::ProgramArtifacts NLPConcatHeadsDecodeProgramFactory::create_program_spec(
+ttnn::device_operation::ProgramArtifacts NLPConcatHeadsDecodeProgramFactory::create_program_artifacts(
     const NlpConcatHeadsDecodeParams& /*operation_attributes*/,
     const NlpConcatHeadsDecodeInputs& tensor_args,
     Tensor& output) {
