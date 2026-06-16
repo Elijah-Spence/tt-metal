@@ -94,7 +94,7 @@ TEST_P(ParallelRngVsThreadCount, SseMatchesOneThread) {
     auto golden = run_sse_parallel(kSize, kSeed, 1);
     auto actual = run_sse_parallel(kSize, kSeed, num_threads);
 
-    size_t mismatches = compare_and_report_mismatches(golden, actual);
+    [[maybe_unused]] size_t mismatches = compare_and_report_mismatches(golden, actual);
     EXPECT_EQ(mismatches, 0u) << "SSE parallel_generate with " << num_threads << " threads produced " << mismatches
                               << " element(s) that differ from the 1-thread reference.";
 }
