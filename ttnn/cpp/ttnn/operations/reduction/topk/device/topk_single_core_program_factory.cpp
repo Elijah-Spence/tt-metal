@@ -19,7 +19,7 @@ using namespace tt::tt_metal::experimental;
 
 namespace ttnn::prim {
 
-ttnn::device_operation::ProgramArtifacts TopKDeviceOperation::TopKSingleCoreProgramFactory::create_program_spec(
+ttnn::device_operation::ProgramArtifacts TopKDeviceOperation::TopKSingleCoreProgramFactory::create_program_artifacts(
     const TopkParams& operation_attributes,
     const TopkInputs& tensor_args,
     std::tuple<Tensor, Tensor>& tensor_return_value) {
