@@ -35,20 +35,30 @@ void parallel_generate(
         return;
     }
 
-    size_t num_threads = std::min(max_threads, std::thread::hardware_concurrency());
+    // Fixed chunk size independent of thread count: seed is per-chunk so output
+    // is identical regardless of how many threads process those chunks.
+    static constexpr size_t CHUNK_SIZE = 512 * 512;
+    const size_t num_threads =
+        std::min(static_cast<size_t>(max_threads), static_cast<size_t>(std::thread::hardware_concurrency()));
+    const size_t num_chunks = (seq.size() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    const size_t actual_threads = std::min(num_threads, num_chunks);
+    const size_t chunks_per_thread = num_chunks / actual_threads;
+    const size_t leftover = num_chunks % actual_threads;
+
     std::vector<std::jthread> threads;
-    threads.reserve(num_threads);
+    threads.reserve(actual_threads);
 
-    size_t chunk_size = seq.size() / num_threads;
-    size_t remainder = seq.size() % num_threads;
-
-    size_t offset = 0;
-    for (size_t i = 0; i < num_threads; ++i) {
-        auto adjusted_chunk_size = chunk_size + (i == num_threads - 1 ? remainder : 0);
-        threads.emplace_back([&dist_factory, &seq, offset, adjusted_chunk_size, seed, i]() {
-            sequential_generate(seq.subspan(offset, adjusted_chunk_size), dist_factory, seed + i);
+    size_t start_chunk = 0;
+    for (size_t t = 0; t < actual_threads; ++t) {
+        const size_t end_chunk = start_chunk + chunks_per_thread + (t < leftover ? 1 : 0);
+        threads.emplace_back([seq, start_chunk, end_chunk, seed, dist_factory]() {
+            for (size_t chunk = start_chunk; chunk < end_chunk; ++chunk) {
+                const size_t offset = chunk * CHUNK_SIZE;
+                const size_t size = std::min(CHUNK_SIZE, seq.size() - offset);
+                sequential_generate(seq.subspan(offset, size), dist_factory, seed + static_cast<uint32_t>(chunk));
+            }
         });
-        offset += adjusted_chunk_size;
+        start_chunk = end_chunk;
     }
 }
 
