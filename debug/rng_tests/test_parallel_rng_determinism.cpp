@@ -114,3 +114,108 @@ INSTANTIATE_TEST_SUITE_P(
     ParallelRngVsThreadCount,
     ::testing::Values(2u, 4u, 8u, 16u),
     [](const ::testing::TestParamInfo<uint32_t>& info) { return std::to_string(info.param) + "threads"; });
+
+// ============================================================================
+// Statistical correctness: mean and variance, full-tensor and per-chunk
+// ============================================================================
+
+namespace {
+
+// Uniform[-1, 1]: E[X] = 0, Var[X] = (b-a)^2/12 = 4/12 = 1/3
+constexpr float kUniformMin = -1.0f;
+constexpr float kUniformMax = 1.0f;
+constexpr double kExpectedMean = 0.0;
+constexpr double kExpectedVariance = (kUniformMax - kUniformMin) * (kUniformMax - kUniformMin) / 12.0;
+constexpr double kAbsTol = 0.01;
+constexpr double kRelTol = 0.01;
+// Must match the RNG implementation's CHUNK_SIZE so per-chunk stats test exact chunk boundaries.
+constexpr size_t kRngChunkSize = 512 * 512;
+
+double stat_tolerance(double expected) { return std::max(kAbsTol, kRelTol * std::abs(expected)); }
+
+std::pair<double, double> compute_mean_variance(std::span<const float> data) {
+    double sum = 0.0, sum_sq = 0.0;
+    for (float v : data) {
+        sum += v;
+        sum_sq += static_cast<double>(v) * v;
+    }
+    const double mean = sum / static_cast<double>(data.size());
+    const double variance = sum_sq / static_cast<double>(data.size()) - mean * mean;
+    return {mean, variance};
+}
+
+void check_stats(std::span<const float> data, const std::string& location) {
+    const auto [mean, variance] = compute_mean_variance(data);
+    EXPECT_NEAR(mean, kExpectedMean, stat_tolerance(kExpectedMean))
+        << location << ": mean out of tolerance (n=" << data.size() << ")";
+    EXPECT_NEAR(variance, kExpectedVariance, stat_tolerance(kExpectedVariance))
+        << location << ": variance out of tolerance (n=" << data.size() << ")";
+}
+
+struct SizeParam {
+    size_t rows;
+    size_t cols;
+};
+
+}  // namespace
+
+class UniformDistributionStats : public ::testing::TestWithParam<SizeParam> {};
+
+TEST_P(UniformDistributionStats, SseStatisticsValid) {
+    const auto [rows, cols] = GetParam();
+    const size_t total = rows * cols;
+
+    std::vector<float> out(total);
+    ttml::core::sse::parallel_generate(
+        std::span{out.data(), out.size()},
+        []() { return std::uniform_real_distribution<float>(kUniformMin, kUniformMax); },
+        kSeed);
+
+    const std::span<const float> all{out.data(), out.size()};
+    const size_t num_chunks = (total + kRngChunkSize - 1) / kRngChunkSize;
+
+    check_stats(all, "SSE full-tensor");
+
+    for (size_t c = 0; c < num_chunks; ++c) {
+        const size_t offset = c * kRngChunkSize;
+        const size_t size = std::min(kRngChunkSize, total - offset);
+        check_stats(all.subspan(offset, size), "SSE chunk[" + std::to_string(c) + "]");
+    }
+}
+
+TEST_P(UniformDistributionStats, LegacyStatisticsValid) {
+    const auto [rows, cols] = GetParam();
+    const size_t total = rows * cols;
+
+    std::vector<float> out(total);
+    ttml::core::legacy::parallel_generate(
+        std::span{out.data(), out.size()},
+        []() { return std::uniform_real_distribution<float>(kUniformMin, kUniformMax); },
+        kSeed);
+
+    const std::span<const float> all{out.data(), out.size()};
+    const size_t num_chunks = (total + kRngChunkSize - 1) / kRngChunkSize;
+
+    check_stats(all, "Legacy full-tensor");
+
+    for (size_t c = 0; c < num_chunks; ++c) {
+        const size_t offset = c * kRngChunkSize;
+        const size_t size = std::min(kRngChunkSize, total - offset);
+        check_stats(all.subspan(offset, size), "Legacy chunk[" + std::to_string(c) + "]");
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Sizes,
+    UniformDistributionStats,
+    ::testing::Values(
+        SizeParam{512, 512},    // 262144 elements — exactly 1 chunk
+        SizeParam{1024, 1024},  // 1048576 elements — exactly 4 chunks
+        SizeParam{249, 1493},   // 371757 elements — 2 chunks, last one partial (109613 elems)
+        SizeParam{2048, 2048},  // 4194304 elements — exactly 16 chunks
+        SizeParam{4096, 4096},  // 16777216 elements — exactly 64 chunks
+        SizeParam{4608, 4096}   // 18874368 elements — 72 chunks; on 16 cores: 8×5 + 8×4
+        ),
+    [](const ::testing::TestParamInfo<SizeParam>& info) {
+        return std::to_string(info.param.rows) + "x" + std::to_string(info.param.cols);
+    });
