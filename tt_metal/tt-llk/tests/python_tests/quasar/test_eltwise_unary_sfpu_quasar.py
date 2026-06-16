@@ -7,7 +7,7 @@ from typing import List
 
 import pytest
 import torch
-from helpers.format_config import DataFormat, FormatConfig
+from helpers.format_config import DataFormat, InputOutputFormat
 from helpers.golden_generators import UnarySFPUGolden, get_golden_generator
 from helpers.llk_params import (
     DataCopyType,
@@ -462,7 +462,7 @@ OP_CONFIGS = [
 OP_CONFIG_BY_MATHOP = {cfg.mathop: cfg for cfg in OP_CONFIGS}
 
 
-def formats_for_op(cfg: OpConfig) -> List[FormatConfig]:
+def formats_for_op(cfg: OpConfig) -> List[InputOutputFormat]:
     """Float formats for every op, plus the integer/UInt16 formats only comp sweeps."""
     if cfg.mathop in COMP_OPS:
         return SFPU_UNARY_FORMATS + SFPU_COMP_EXTRA_FORMATS
