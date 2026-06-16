@@ -219,3 +219,100 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<SizeParam>& info) {
         return std::to_string(info.param.rows) + "x" + std::to_string(info.param.cols);
     });
+
+// ============================================================================
+// Statistical correctness: mean and variance for Normal distribution
+// ============================================================================
+
+namespace {
+
+// Normal(0, 1): E[X] = 0, Var[X] = 1
+constexpr float kNormalMean = 0.0f;
+constexpr float kNormalStddev = 1.0f;
+constexpr double kExpectedNormalMean = 0.0;
+constexpr double kExpectedNormalVariance = 1.0;
+
+}  // namespace
+
+class NormalDistributionStats : public ::testing::TestWithParam<SizeParam> {};
+
+TEST_P(NormalDistributionStats, SseStatisticsValid) {
+    const auto [rows, cols] = GetParam();
+    const size_t total = rows * cols;
+
+    std::vector<float> out(total);
+    ttml::core::sse::parallel_generate(
+        std::span{out.data(), out.size()},
+        []() { return std::normal_distribution<float>(kNormalMean, kNormalStddev); },
+        kSeed);
+
+    const std::span<const float> all{out.data(), out.size()};
+    const size_t num_chunks = (total + kRngChunkSize - 1) / kRngChunkSize;
+
+    {
+        const auto [mean, variance] = compute_mean_variance(all);
+        EXPECT_NEAR(mean, kExpectedNormalMean, stat_tolerance(kExpectedNormalMean))
+            << "SSE full-tensor: mean out of tolerance (n=" << total << ")";
+        EXPECT_NEAR(variance, kExpectedNormalVariance, stat_tolerance(kExpectedNormalVariance))
+            << "SSE full-tensor: variance out of tolerance (n=" << total << ")";
+    }
+
+    for (size_t c = 0; c < num_chunks; ++c) {
+        const size_t offset = c * kRngChunkSize;
+        const size_t size = std::min(kRngChunkSize, total - offset);
+        const auto chunk = all.subspan(offset, size);
+        const auto [mean, variance] = compute_mean_variance(chunk);
+        EXPECT_NEAR(mean, kExpectedNormalMean, stat_tolerance(kExpectedNormalMean))
+            << "SSE chunk[" << c << "]: mean out of tolerance (n=" << size << ")";
+        EXPECT_NEAR(variance, kExpectedNormalVariance, stat_tolerance(kExpectedNormalVariance))
+            << "SSE chunk[" << c << "]: variance out of tolerance (n=" << size << ")";
+    }
+}
+
+TEST_P(NormalDistributionStats, LegacyStatisticsValid) {
+    const auto [rows, cols] = GetParam();
+    const size_t total = rows * cols;
+
+    std::vector<float> out(total);
+    ttml::core::legacy::parallel_generate(
+        std::span{out.data(), out.size()},
+        []() { return std::normal_distribution<float>(kNormalMean, kNormalStddev); },
+        kSeed);
+
+    const std::span<const float> all{out.data(), out.size()};
+    const size_t num_chunks = (total + kRngChunkSize - 1) / kRngChunkSize;
+
+    {
+        const auto [mean, variance] = compute_mean_variance(all);
+        EXPECT_NEAR(mean, kExpectedNormalMean, stat_tolerance(kExpectedNormalMean))
+            << "Legacy full-tensor: mean out of tolerance (n=" << total << ")";
+        EXPECT_NEAR(variance, kExpectedNormalVariance, stat_tolerance(kExpectedNormalVariance))
+            << "Legacy full-tensor: variance out of tolerance (n=" << total << ")";
+    }
+
+    for (size_t c = 0; c < num_chunks; ++c) {
+        const size_t offset = c * kRngChunkSize;
+        const size_t size = std::min(kRngChunkSize, total - offset);
+        const auto chunk = all.subspan(offset, size);
+        const auto [mean, variance] = compute_mean_variance(chunk);
+        EXPECT_NEAR(mean, kExpectedNormalMean, stat_tolerance(kExpectedNormalMean))
+            << "Legacy chunk[" << c << "]: mean out of tolerance (n=" << size << ")";
+        EXPECT_NEAR(variance, kExpectedNormalVariance, stat_tolerance(kExpectedNormalVariance))
+            << "Legacy chunk[" << c << "]: variance out of tolerance (n=" << size << ")";
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Sizes,
+    NormalDistributionStats,
+    ::testing::Values(
+        SizeParam{512, 512},    // 262144 elements — exactly 1 chunk
+        SizeParam{1024, 1024},  // 1048576 elements — exactly 4 chunks
+        SizeParam{249, 1493},   // 371757 elements — 2 chunks, last one partial (109613 elems)
+        SizeParam{2048, 2048},  // 4194304 elements — exactly 16 chunks
+        SizeParam{4096, 4096},  // 16777216 elements — exactly 64 chunks
+        SizeParam{4608, 4096}   // 18874368 elements — 72 chunks; on 16 cores: 8×5 + 8×4
+        ),
+    [](const ::testing::TestParamInfo<SizeParam>& info) {
+        return std::to_string(info.param.rows) + "x" + std::to_string(info.param.cols);
+    });
