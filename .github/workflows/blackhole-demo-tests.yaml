@@ -15,6 +15,7 @@ on:
         type: choice
         options:
           - all
+          - ace-step-v1.5
           - stable_diffusion_xl
           - mistral-small-3.1-24b
           - mochi
