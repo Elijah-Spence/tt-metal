@@ -37,6 +37,7 @@ ALWI void unary_op_init_common(uint32_t icb, uint32_t ocb, uint32_t call_line = 
 
     PACK((llk_pack_hw_configure(ocb)));
     PACK((llk_pack_init(ocb)));
+    PACK((llk_pack_dest_init()));
 
     MATH((llk_math_eltwise_unary_datacopy_init<DataCopyType::A2D, DST_ACCUM_MODE, BroadcastType::NONE, UnpackToDestEn>(
         icb)));

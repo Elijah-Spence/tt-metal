@@ -39,12 +39,18 @@ template <
     DataCopyType type,
     bool EN_32BIT_DEST,
     BroadcastType src_b_bcast_type = BroadcastType::NONE,
-    bool unpack_to_dest = false>
+    bool unpack_to_dest = false,
+    [[maybe_unused]] bool is_int_fpu_en = false,
+    [[maybe_unused]] bool tilize = false>
 inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand = 0) {
     const std::uint32_t operand_id = get_operand_id(operand);
     const std::uint32_t num_faces = get_operand_num_faces(operand_id);
     const std::uint32_t face_r_dim = get_operand_face_r_dim(operand_id);
     const std::uint32_t num_rows = num_faces * face_r_dim;
+
+    const DataFormat srcA_format = static_cast<DataFormat>(get_operand_dst_format(operand_id));
+    const DataFormat srcB_format = static_cast<DataFormat>(get_operand_dst_format(operand_id));
+    _configure_default_alu_data_format_state_<false /* IMPLIED_MATH_FORMAT */, EN_32BIT_DEST>(srcA_format, srcB_format);
 
     if constexpr (src_b_bcast_type == BroadcastType::NONE) {
         _llk_math_eltwise_unary_datacopy_init_<type, EN_32BIT_DEST, unpack_to_dest>(
@@ -68,14 +74,14 @@ inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand = 0
  * @tparam src_b_bcast_type Broadcast mode; non-NONE with unpack_to_dest false uses unary-broadcast math
  * @tparam unpack_to_dest when true, unpack-to-dest path; plain datacopy otherwise
  * @param dst_index Tile index into the destination register.
- * @param operand Logical dataflow buffer id for the input operand (defaults to 0 for legacy call sites).
+ * @param operand Logical dataflow buffer id for the input operand.
  */
 template <
     DataCopyType type = DataCopyType::A2D,
     bool EN_32BIT_DEST = false,
     BroadcastType src_b_bcast_type = BroadcastType::NONE,
     bool unpack_to_dest = false>
-inline void llk_math_eltwise_unary_datacopy(const std::uint32_t dst_index, const std::uint32_t operand = 0) {
+inline void llk_math_eltwise_unary_datacopy(const std::uint32_t dst_index, const std::uint32_t operand) {
     const std::uint32_t operand_id = get_operand_id(operand);
     const std::uint32_t num_faces = get_operand_num_faces(operand_id);
     const std::uint32_t face_r_dim = get_operand_face_r_dim(operand_id);
@@ -98,7 +104,7 @@ inline void llk_math_eltwise_unary_datacopy(const std::uint32_t dst_index, const
  *
  * @param start_dst_index Starting tile index in the destination register.
  * @param ntiles Number of tiles to copy to the destination register.
- * @param operand Logical dataflow buffer id for the input operand (defaults to 0 for legacy call sites).
+ * @param operand Logical dataflow buffer id for the input operand.
  */
 template <
     DataCopyType type = DataCopyType::A2D,
@@ -106,7 +112,7 @@ template <
     BroadcastType src_b_bcast_type = BroadcastType::NONE,
     bool unpack_to_dest = false>
 inline void llk_math_eltwise_unary_datacopy_block(
-    const std::uint32_t start_dst_index, const std::uint32_t ntiles, const std::uint32_t operand = 0) {
+    const std::uint32_t start_dst_index, const std::uint32_t ntiles, const std::uint32_t operand) {
     const std::uint32_t operand_id = get_operand_id(operand);
     const std::uint32_t num_faces = get_operand_num_faces(operand_id);
     const std::uint32_t face_r_dim = get_operand_face_r_dim(operand_id);
