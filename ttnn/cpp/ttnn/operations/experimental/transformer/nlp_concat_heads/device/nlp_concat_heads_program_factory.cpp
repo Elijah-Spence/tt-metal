@@ -21,7 +21,7 @@ using namespace tt;
 using namespace tt::tt_metal;
 using namespace tt::tt_metal::experimental;
 
-ttnn::device_operation::ProgramArtifacts NLPConcatHeadsProgramFactory::create_program_spec(
+ttnn::device_operation::ProgramArtifacts NLPConcatHeadsProgramFactory::create_program_artifacts(
     const NlpConcatHeadsParams& /*operation_attributes*/, const Tensor& input, Tensor& output) {
     // Metal 2.0 named resource handles (locals, for unity-build hygiene).
     const DFBSpecName IN_DFB{"in"};
