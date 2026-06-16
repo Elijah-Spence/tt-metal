@@ -85,7 +85,7 @@
 
 - name: ttnn nightly experimental tests (wormhole)
   # test_moe_grouped_topk hangs on Wormhole (TODO: file issue + restore). Exclude on WH only.
-  cmd: 'pytest tests/ttnn/nightly/unit_tests/operations/experimental -xv -k "not performance and not test_moe_grouped_topk" -m "not extended_model" --timeout=600'
+  cmd: 'pytest tests/ttnn/nightly/unit_tests/operations/experimental -xv -k "not performance and not test_moe_grouped_topk" --timeout=600'
   skus:
     wh_n150:
       timeout: 65
@@ -96,7 +96,7 @@
   category: experimental
 
 - name: ttnn nightly experimental tests (blackhole)
-  cmd: 'pytest tests/ttnn/nightly/unit_tests/operations/experimental -xv -k "not performance" -m "not extended_model" --timeout=600'
+  cmd: 'pytest tests/ttnn/nightly/unit_tests/operations/experimental -xv -k "not performance" --timeout=600'
   skus:
     bh_p100:
       timeout: 35
@@ -334,20 +334,6 @@
 # =============================================================================
 # Model demos
 # =============================================================================
-
-- name: DeepSeek prefill op tests (extended models, single device)
-  # Single-device (fabric-disabled) extended MoE op configs run on a single Blackhole
-  # card. -k "single" selects only those configs (currently routed_expert's "single-1");
-  # the multi-device configs are handled by the QuietBox 2 entry below. ROW_MAJOR is
-  # excluded in CI (-k "not row_major"); it stays in the matrix for local runs.
-  cmd: |
-    pytest models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_prefill_dispatch.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_prefill_combine.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ttnn_dispatch_combine.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ttnn_routed_expert.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_reduce.py -vvv --tb=short -k "single and not row_major" -m "extended_model" --timeout=600
-  skus:
-    bh_p100:
-      timeout: 15
-  owner_id: U094PKWHNJ0 # Nikola Ostojic
-  team: models
-  category: deepseek_prefill
 
 - name: ttnn nightly sdxl tests (wormhole)
   cmd: |
