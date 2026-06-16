@@ -249,7 +249,7 @@ struct semaphore
 
     constexpr static std::uint16_t t6_sem(const std::uint8_t sem_index)
     {
-        return (1 << sem_index);
+        return (1u << sem_index);
     }
 };
 
@@ -263,7 +263,7 @@ inline void t6_semaphore_post(const std::uint8_t index)
         TTI_STALLWAIT(p_stall::STALL_SYNC, WaitRes2, WaitRes1, WaitRes0);
     }
 
-    TTI_SEMPOST(0, semaphore::t6_sem(index));
+    TT_SEMPOST(0, semaphore::t6_sem(index));
 }
 
 // Tensix thread semaphore get optionally stalled
@@ -276,7 +276,7 @@ inline void t6_semaphore_get(const std::uint8_t index)
         TTI_STALLWAIT(p_stall::STALL_SYNC, WaitRes2, WaitRes1, WaitRes0);
     }
 
-    TTI_SEMGET(0, semaphore::t6_sem(index));
+    TT_SEMGET(0, semaphore::t6_sem(index));
 }
 
 /**

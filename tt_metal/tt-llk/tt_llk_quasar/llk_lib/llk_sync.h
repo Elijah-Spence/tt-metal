@@ -33,13 +33,13 @@ using namespace ckernel::trisc;
 /**
  * @brief Initialize semaphore `sem_index` with the given max and initial values.
  *
- * @param sem_index Semaphore id in range [0, 31].
+ * @param sem_index Semaphore id in range [0, 7].
  * @param max       Maximum value the semaphore can hold.
  * @param init      Initial value of the semaphore.
  */
 inline void _llk_sync_init_(std::uint8_t sem_index, std::uint32_t max, std::uint32_t init)
 {
-    TTI_SEMINIT(max, init, 0, semaphore::t6_sem(sem_index));
+    TT_SEMINIT(max, init, 0, semaphore::t6_sem(sem_index));
 }
 
 /**
@@ -47,14 +47,14 @@ inline void _llk_sync_init_(std::uint8_t sem_index, std::uint32_t max, std::uint
  *
  * @tparam StallRes  Resource the calling thread holds while blocked
  *                   (e.g. p_stall::STALL_UNPACK).
- * @param sem_index  Semaphore id in range [0, 31].
+ * @param sem_index  Semaphore id in range [0, 7].
  * @param condition  Wait predicate, typically p_stall::STALL_ON_ZERO
  *                   (wait > 0) or p_stall::STALL_ON_MAX (wait < max).
  */
 template <std::uint32_t StallRes>
 inline void _llk_sync_wait_(std::uint8_t sem_index, std::uint32_t condition)
 {
-    TTI_SEMWAIT(StallRes, condition, 0, semaphore::t6_sem(sem_index));
+    TT_SEMWAIT(StallRes, condition, 0, semaphore::t6_sem(sem_index));
 }
 
 /**
