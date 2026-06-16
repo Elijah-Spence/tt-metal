@@ -309,9 +309,10 @@ def run_case(
 
     Returns the shard path.
     """
-    # Seed the global RNG too (not just spec.seed) so it's consistent with the
-    # param: 0 when unseeded (reproducible baseline), else the requested seed.
-    torch.manual_seed(0 if seed is None else seed)
+    # The conftest file already sets seed to 42,
+    # so only override it when the caller passes an explicit seed.
+    if seed is not None:
+        torch.manual_seed(seed)
 
     spec = build_sweep_spec(op, formats.input_format, distribution, seed)
     input_dimensions = sweep_input_dimensions(points)
