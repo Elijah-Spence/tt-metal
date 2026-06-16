@@ -341,54 +341,50 @@ def run_combine(
     logger.debug("✅ TTNN combine operation matches torch reference!")
 
 
-# Per-model combine shapes as (id_prefix, config, extended_model, layouts). Each model contributes
-# a pcc param (seq 128, // 16 experts, top-4) and a perf param (seq 3200, // 4 experts, top-2),
-# crossed with that model's dispatched-buffer layouts. DeepSeek V3 is the baseline (runs by
-# default and exercises both TILE and ROW_MAJOR); every other model is gated behind
-# @pytest.mark.extended_model and only runs the TILE layout. dispatch_buffer_capacity_factor is
-# ceil(N/2) of the most conservative integer N such that dgs*seq*N >= worst-case dispatch buffer.
+# Per-model combine shapes as (id_prefix, config, extended_model). Each model contributes a pcc
+# param (seq 128, // 16 experts, top-4) and a perf param (seq 3200, // 4 experts, top-2). DeepSeek
+# V3 is the baseline and runs by default; every other model is gated behind
+# @pytest.mark.extended_model. dispatch_buffer_capacity_factor is ceil(N/2) of the most
+# conservative integer N such that dgs*seq*N >= worst-case dispatch buffer.
 COMBINE_MODELS = [
-    ("ds", DeepSeekV3Config, False, [(ttnn.TILE_LAYOUT, "tile"), (ttnn.ROW_MAJOR_LAYOUT, "row_major")]),
-    ("glm", GLM51Config, True, [(ttnn.TILE_LAYOUT, "tile")]),
-    ("kimi", KimiK26Config, True, [(ttnn.TILE_LAYOUT, "tile")]),
-    ("minimax", MiniMaxM27Config, True, [(ttnn.TILE_LAYOUT, "tile")]),
-    ("v4_pro", DeepSeekV4ProConfig, True, [(ttnn.TILE_LAYOUT, "tile")]),
-    ("v4_flash", DeepSeekV4FlashConfig, True, [(ttnn.TILE_LAYOUT, "tile")]),
-    ("gpt_oss", GptOss120BConfig, True, [(ttnn.TILE_LAYOUT, "tile")]),
+    ("ds", DeepSeekV3Config, False),
+    ("glm", GLM51Config, True),
+    ("kimi", KimiK26Config, True),
+    ("minimax", MiniMaxM27Config, True),
+    ("v4_pro", DeepSeekV4ProConfig, True),
+    ("v4_flash", DeepSeekV4FlashConfig, True),
+    ("gpt_oss", GptOss120BConfig, True),
 ]
 
 
 def combine_shape_params():
-    """Build the per-model (shape, run_pcc_check, dispatched_buffer_layout) parametrization. Folding
-    the layout in here keeps ROW_MAJOR exercised only on DeepSeek V3, exactly as the separate tests
-    did, while non-baseline models carry the extended_model marker on their params."""
+    """Build the per-model (shape, run_pcc_check) parametrization. Non-baseline models carry the
+    extended_model marker on their params so they stay gated exactly as the separate tests were."""
     params = []
-    for name, config, extended, layouts in COMBINE_MODELS:
+    for name, config, extended in COMBINE_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
         shapes = [
             ("pcc", 128, config.NUM_ROUTED_EXPERTS // 16, 4, 4, True),
             ("perf_no_pcc", 3200, config.NUM_ROUTED_EXPERTS // 4, 2, 8, False),
         ]
         for shape_id, seq, num_experts, topk, capacity, run_pcc in shapes:
-            for layout, layout_id in layouts:
-                params.append(
-                    pytest.param(
-                        seq,
-                        config.EMB_SIZE,
-                        num_experts,
-                        topk,
-                        capacity,
-                        run_pcc,
-                        layout,
-                        marks=marks,
-                        id=f"{name}-{shape_id}-{layout_id}",
-                    )
+            params.append(
+                pytest.param(
+                    seq,
+                    config.EMB_SIZE,
+                    num_experts,
+                    topk,
+                    capacity,
+                    run_pcc,
+                    marks=marks,
+                    id=f"{name}-{shape_id}",
                 )
+            )
     return params
 
 
 @pytest.mark.parametrize(
-    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check, dispatched_buffer_layout",
+    "seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
     combine_shape_params(),
 )
 @pytest.mark.parametrize(
@@ -397,6 +393,11 @@ def combine_shape_params():
     indirect=["mesh_device", "device_params"],
 )
 @pytest.mark.parametrize("use_predictable_data", [True, False], ids=["predictable", "random"])
+@pytest.mark.parametrize(
+    "dispatched_buffer_layout",
+    [ttnn.TILE_LAYOUT, ttnn.ROW_MAJOR_LAYOUT],
+    ids=["tile", "row_major"],
+)
 @pytest.mark.parametrize("use_fp8_output", [False, True], ids=["bf16_out", "fp8_out"])
 def test_ttnn_combine(
     mesh_device,

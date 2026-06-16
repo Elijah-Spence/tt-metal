@@ -335,6 +335,20 @@
 # Model demos
 # =============================================================================
 
+- name: DeepSeek prefill op tests (extended models, single device)
+  # Single-device (fabric-disabled) extended MoE op configs run on a single Blackhole
+  # card. -k "single" selects only those configs (currently routed_expert's "single-1");
+  # the multi-device configs are handled by the QuietBox 2 entry below. ROW_MAJOR is
+  # excluded in CI (-k "not row_major"); it stays in the matrix for local runs.
+  cmd: |
+    pytest models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_prefill_dispatch.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_prefill_combine.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ttnn_dispatch_combine.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ttnn_routed_expert.py models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_reduce.py -vvv --tb=short -k "single and not row_major" -m "extended_model" --timeout=600
+  skus:
+    bh_p100:
+      timeout: 15
+  owner_id: U094PKWHNJ0 # Nikola Ostojic
+  team: models
+  category: deepseek_prefill
+
 - name: ttnn nightly sdxl tests (wormhole)
   cmd: |
     pytest models/demos/stable_diffusion_xl_base/tests/pcc/test_unet_loop.py --loop-iter-num=50 -xv -m "not disable_fast_runtime_mode" --timeout=600

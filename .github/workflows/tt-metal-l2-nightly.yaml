@@ -286,7 +286,7 @@ jobs:
       enabled-skus: ${{ needs.generate-arch-matrix.outputs.l2-nightly-skus }}
       additional_test_categories: >-
         ${{ github.event_name == 'schedule' &&
-        'conv,matmul,fused,reduction,experimental,pool,eltwise,transformers,moreh,misc,sdpa,data_movement,docs_examples,sdxl,compute_fused'
+        'conv,matmul,fused,reduction,experimental,pool,eltwise,transformers,moreh,misc,sdpa,data_movement,docs_examples,sdxl,compute_fused,deepseek_prefill'
         || inputs.additional_test_categories }}
       enable-llk-asserts: ${{ inputs.enable-llk-asserts || false }}
   ttnn-ops-docs-check:
