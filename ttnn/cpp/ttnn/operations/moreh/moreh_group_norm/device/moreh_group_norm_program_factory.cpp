@@ -325,10 +325,9 @@ ProgramDescriptor MorehGroupNormOperation::create_descriptor(
             TT_THROW("Core not in specified core ranges.");
         }
 
-        // BufferBinding fast cache-hit path is safe here because eps and the optional
-        // tensor presence flags are in compute_program_hash above — a cache hit
-        // guarantees identical attrs, so re-running create_descriptor() would just
-        // produce the same scalar values. The framework's fast path patches only the
+        // BufferBinding fast cache-hit path is safe here: the default reflection hash
+        // covers all operation_attributes (including eps) and tensor metadata, so a
+        // cache hit guarantees identical attrs. The framework's fast path patches only
         // input/output buffer addresses (the only thing that legitimately changes
         // call-to-call when the cache hits).
         reader_desc.emplace_runtime_args(
