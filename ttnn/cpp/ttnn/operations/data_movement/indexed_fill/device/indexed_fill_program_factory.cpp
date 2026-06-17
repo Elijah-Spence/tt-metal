@@ -37,6 +37,13 @@ ProgramDescriptor IndexedFillProgramFactory::create_descriptor(
     constexpr uint32_t cb_index = 0;
     constexpr uint32_t batch_cb_index = 1;
 
+    // Reader kernel selects its data path via compile-time arg 3 (see indexed_fill_reader.cpp
+    // header). This factory drives the interleaved one-batch-per-core layout, which maps to the
+    // reader's generic path. The mode arg MUST be emitted explicitly: if omitted, the reader reads
+    // input_a's TensorAccessorArgs config word (== IsDram for DRAM tensors) as the mode and wrongly
+    // enters the shard-local path, reading runtime args this factory never sets -> device hang.
+    constexpr uint32_t MODE_GENERIC = 0;
+
     tt::DataFormat cb_data_format = datatype_to_dataformat_converter(input_a.dtype());
 
     uint32_t page_size = input_a.padded_shape()[-1] * input_a.element_size();
@@ -70,8 +77,10 @@ ProgramDescriptor IndexedFillProgramFactory::create_descriptor(
     Buffer* input_b_buffer = input_b.buffer();
     Buffer* output_buffer = output.buffer();
 
-    // Reader compile-time args + tensor accessor args for batch_ids, input_a, input_b
-    std::vector<uint32_t> reader_compile_time_args = {cb_index, batch_cb_index, page_size};
+    // Reader compile-time args + tensor accessor args for batch_ids, input_a, input_b.
+    // page_size is arg[2]; the mode selector is arg[3], directly before the appended accessor args
+    // (the reader reads accessor args starting at index 4 via TensorAccessorArgs<4>).
+    std::vector<uint32_t> reader_compile_time_args = {cb_index, batch_cb_index, page_size, MODE_GENERIC};
     TensorAccessorArgs(*input_a_buffer).append_to(reader_compile_time_args);
     TensorAccessorArgs(*input_b_buffer).append_to(reader_compile_time_args);
     TensorAccessorArgs(*batch_ids_buffer).append_to(reader_compile_time_args);
@@ -98,21 +107,43 @@ ProgramDescriptor IndexedFillProgramFactory::create_descriptor(
 
     uint32_t batch_size_in_sticks = input_a.padded_shape()[1] * input_a.padded_shape()[2];
 
+    // Generic-path geometry for dim=0, one batch (slice) per core:
+    //   inner_count    = pages per batch                 (== batch_size_in_sticks)
+    //   outer_count    = dims before dim 0               (== 1)
+    //   outer_stride_a = B * inner_count                 (input_a page stride per outer step)
+    //   outer_stride_b = b * inner_count                 (input_b page stride per outer step)
+    // With outer_count == 1 the strides do not affect addressing, but are passed for completeness.
+    constexpr uint32_t outer_count = 1;
+    const uint32_t outer_stride_a = B * batch_size_in_sticks;
+    const uint32_t outer_stride_b = b * batch_size_in_sticks;
+
     for (uint32_t i = 0; i < cores.size(); ++i) {
         const CoreCoord& core = cores[i];
         if (i < B) {
             // Active core: real work + Buffer* bindings for fast cache-hit patching.
+            // Reader args: arg[4]=inner_count, arg[5]=slice_start, arg[6]=outer_count,
+            //              arg[7]=outer_stride_a, arg[8]=outer_stride_b, arg[9]=num_slices.
             reader_desc.emplace_runtime_args(
-                core, {batch_ids_buffer, b, input_a_buffer, input_b_buffer, batch_size_in_sticks, i});
+                core,
+                {batch_ids_buffer,
+                 b,
+                 input_a_buffer,
+                 input_b_buffer,
+                 batch_size_in_sticks,
+                 i,
+                 outer_count,
+                 outer_stride_a,
+                 outer_stride_b,
+                 1u});
             writer_desc.emplace_runtime_args(
                 core, {output_buffer, page_size, batch_size_in_sticks, i * batch_size_in_sticks});
         } else {
-            // Idle core: short-circuits because local_b/local_batch_size_in_sticks are 0.
+            // Idle core: short-circuits because num_slices (arg[9]) is 0.
             // Pass plain 0u for buffer slots so we don't register a BufferBinding here —
             // those bindings would force the framework to do a GetRuntimeArgs lookup on
             // every cache hit for cores that never read/write the buffer.  The kernel
             // ignores the address when its work count is 0.
-            reader_desc.emplace_runtime_args(core, {0u, 0u, 0u, 0u, 0u, i});
+            reader_desc.emplace_runtime_args(core, {0u, 0u, 0u, 0u, 0u, i, 0u, 0u, 0u, 0u});
             writer_desc.emplace_runtime_args(core, {0u, page_size, 0u, 0u});
         }
     }

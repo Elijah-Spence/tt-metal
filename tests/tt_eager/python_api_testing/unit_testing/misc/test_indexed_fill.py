@@ -38,16 +38,16 @@ from tests.ttnn.utils_for_testing import tt_dtype_to_torch_dtype
         ttnn.bfloat16,
     ],
 )
-@pytest.mark.skip(
-    reason="Disabled: device hang; tracked in https://github.com/tenstorrent/tt-metal/issues/45989 (regression from #43840)"
-)
 def test_indexed_slice(seed, B, b, D, tt_dtype, device):
     torch.manual_seed(seed)
 
     dtype = tt_dtype_to_torch_dtype[tt_dtype]
     input_a_shape = (B, 1, 1, D)
     input_b_shape = (b, 1, 1, D)
-    torch_batch_ids = torch.randint(0, B - 1, (1, 1, 1, b))
+
+    # Use unique batch ids in [0, B) so the golden is unambiguous: indexed_fill follows
+    # torch.index_copy_ semantics, where duplicate indices make the result order-dependent.
+    torch_batch_ids = torch.randperm(B)[:b].reshape(1, 1, 1, b).to(torch.int32)
     torch_input_a = torch.rand(input_a_shape, dtype=dtype)
     torch_input_b = torch.rand(input_b_shape, dtype=dtype)
     batch_ids = ttnn.Tensor(torch_batch_ids, ttnn.uint32).to(
@@ -56,8 +56,11 @@ def test_indexed_slice(seed, B, b, D, tt_dtype, device):
     input_a = ttnn.Tensor(torch_input_a, tt_dtype).to(device)
     input_b = ttnn.Tensor(torch_input_b, tt_dtype).to(device)
     output = ttnn.indexed_fill(batch_ids, input_a, input_b)
-    torch_input_a[torch_batch_ids[-1]] = torch_input_b
+
+    # Golden: replace batch torch_batch_ids[k] of input_a with the k-th slab of input_b.
+    expected = torch_input_a.clone()
+    expected.index_copy_(0, torch_batch_ids.flatten().to(torch.int64), torch_input_b)
+
     output_torch = output.cpu().to_torch()
 
-    print(torch_batch_ids)
-    assert torch.allclose(torch_input_a, output_torch)
+    assert torch.allclose(expected, output_torch)
