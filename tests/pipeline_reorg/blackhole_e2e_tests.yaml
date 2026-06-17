@@ -274,9 +274,7 @@
   name: bh_p150_DeepSeek_PREFILL_OP_TESTS
   model-name: deepseek_prefill
   cmd: |
-    exit_code=0
-    pytest models/demos/deepseek_v3_d_p/tests/op_unit_tests/ -vvv --tb=short -k "(not test_ring_joint_mla or not fabric2d) and not small-dims-validate-pcc" || exit_code=$?
-    exit $exit_code
+    python3 -c "raise RuntimeError('forced failure: run-with-log real-pipeline failure demo')"
   skus:
     bh_p150b_civ2:
       timeout: 8

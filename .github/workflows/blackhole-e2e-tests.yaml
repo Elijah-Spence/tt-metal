@@ -56,6 +56,11 @@ on:
         type: boolean
         default: false
         description: "Enable Link Time Optimization (LTO)"
+      use-artifacts-from-run:
+        required: false
+        type: string
+        default: ""
+        description: "Reuse build+wheel from this run id (skips the build)"
   workflow_call:
     inputs:
       system-type:
@@ -135,6 +140,7 @@ jobs:
       tracy: true
       platform: ${{ inputs.platform || 'Ubuntu 22.04' }}
       enable-lto: ${{ inputs.enable-lto || false }}
+      use-artifacts-from-run: ${{ inputs.use-artifacts-from-run || '' }}
   blackhole-e2e-tests:
     needs: [check-harbor, build-artifact, generate-card-matrix]
     secrets: inherit
