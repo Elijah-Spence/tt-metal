@@ -463,30 +463,21 @@ TEST_F(LLKMeshDeviceFixture, TensixComputeTransposeWHDest) {
     unit_tests::compute::transpose::run_single_core_transpose(this->devices_.at(0), test_config);
 }
 
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarTransposeWHDestFloat32_SyncHalf) {
-    unit_tests::compute::transpose::TransposeConfig test_config = {
-        .short_init = false,
-        .transpose_dest = true,
-        .single_tile_size = constants::TILE_HW * sizeof(uint32_t),
-        .shape = {1, 1, 64, 64},
-        .transpose_type = unit_tests::compute::transpose::TransposeType::WH,
-        .data_format = tt::DataFormat::Float32,
-        .dst_full_sync_en = false,
-    };
-    unit_tests::compute::transpose::run_single_core_transpose(this->devices_.at(0), test_config);
-}
-
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarTransposeWHDestFloat32_SyncFull) {
-    unit_tests::compute::transpose::TransposeConfig test_config = {
-        .short_init = false,
-        .transpose_dest = true,
-        .single_tile_size = constants::TILE_HW * sizeof(uint32_t),
-        .shape = {1, 1, 64, 64},
-        .transpose_type = unit_tests::compute::transpose::TransposeType::WH,
-        .data_format = tt::DataFormat::Float32,
-        .dst_full_sync_en = true,
-    };
-    unit_tests::compute::transpose::run_single_core_transpose(this->devices_.at(0), test_config);
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarTransposeWHDestFloat32) {
+    // Tests SyncHalf and SyncFull
+    for (const bool dst_full_sync_en : {false, true}) {
+        SCOPED_TRACE(dst_full_sync_en ? "dst_full_sync_en=true (SyncFull)" : "dst_full_sync_en=false (SyncHalf)");
+        unit_tests::compute::transpose::TransposeConfig test_config = {
+            .short_init = false,
+            .transpose_dest = true,
+            .single_tile_size = constants::TILE_HW * sizeof(uint32_t),
+            .shape = {1, 1, 64, 64},
+            .transpose_type = unit_tests::compute::transpose::TransposeType::WH,
+            .data_format = tt::DataFormat::Float32,
+            .dst_full_sync_en = dst_full_sync_en,
+        };
+        unit_tests::compute::transpose::run_single_core_transpose(this->devices_.at(0), test_config);
+    }
 }
 
 }  // namespace tt::tt_metal

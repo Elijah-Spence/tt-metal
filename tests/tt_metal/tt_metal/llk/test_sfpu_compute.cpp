@@ -1496,20 +1496,15 @@ INSTANTIATE_TEST_SUITE_P(
         return std::get<1>(info.param) + "_" + std::to_string(std::get<0>(info.param)) + "tiles";
     });
 
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarSfpuRelu_1Tile_SyncFull) {
-    run_quasar_sfpu_unpack_to_dest_fp32(this->devices_.at(0), /*num_tiles=*/1, "relu", /*dst_full_sync_en=*/true);
-}
-
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarSfpuRelu_1Tile_SyncHalf) {
-    run_quasar_sfpu_unpack_to_dest_fp32(this->devices_.at(0), /*num_tiles=*/1, "relu", /*dst_full_sync_en=*/false);
-}
-
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarSfpuRelu_4Tile_SyncFull) {
-    run_quasar_sfpu_unpack_to_dest_fp32(this->devices_.at(0), /*num_tiles=*/4, "relu", /*dst_full_sync_en=*/true);
-}
-
-TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarSfpuRelu_4Tile_SyncHalf) {
-    run_quasar_sfpu_unpack_to_dest_fp32(this->devices_.at(0), /*num_tiles=*/4, "relu", /*dst_full_sync_en=*/false);
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarSfpuRelu) {
+    // 1 and 4-tile, SyncFull and SyncHalf
+    for (const uint32_t num_tiles : {1u, 4u}) {
+        for (const bool dst_full_sync_en : {true, false}) {
+            SCOPED_TRACE(
+                std::string("num_tiles=") + std::to_string(num_tiles) + (dst_full_sync_en ? " SyncFull" : " SyncHalf"));
+            run_quasar_sfpu_unpack_to_dest_fp32(this->devices_.at(0), num_tiles, "relu", dst_full_sync_en);
+        }
+    }
 }
 
 }  // namespace tt::tt_metal
