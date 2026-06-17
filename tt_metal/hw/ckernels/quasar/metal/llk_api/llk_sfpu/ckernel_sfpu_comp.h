@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 #include "ckernel_defs.h"
 #include "ckernel_trisc_common.h"
@@ -15,102 +16,70 @@ namespace ckernel {
 namespace sfpu {
 
 /**
- * @brief Per-DataFormat sfpi vector type and 0/1 encoding for the comparison-to-zero result.
+ * @brief sfpi container type for an *integer* dst_reg[0] format (vInt→SMAG32, vSMag16→SMAG16,
+ * vUInt16→UINT16).
  *
- * @c load reads the element and reinterprets the bits as a @c vUInt for the shared predicate (see
- * @ref _zero_comp_pred_); @c store writes @c zero/@c one back in FMT's native encoding. The 16/32-bit
- * and float formats ride the sfpi @c dst_reg[0] container that carries FMT's width (vInt→INT32,
- * vSMag16→INT16, vUInt16→UINT16, vFloat→implied float). The 8-bit formats have no such container
- * (sfpi exposes no 8-bit dst_reg conversion), so Int8/UInt8 issue an explicit-mode SFPLOAD/SFPSTORE
- * (sfpmem INT8 / UINT8) bridged through @c vUInt(sfpu_t) / @c vInt::get().
- *
- * @tparam FMT: SFPU DataFormat (sfpu_math). Int32 / Int16 / Int8 signed, UInt16 / UInt8 unsigned, or
- *         Float32 for every float width (the dispatcher routes Float16/Float16_b through the Float32
- *         path).
+ * @note Floats (all widths share @c vFloat) and the 8-bit formats (no sfpi dst_reg conversion; raw
+ *       SFPLOAD path) are handled in @ref zero_comp_traits, not here.
  */
 template <DataFormat FMT>
-struct zero_comp_traits;
-
+struct dst_container {
+    using type = sfpi::vInt;
+};  // Int32
 template <>
-struct zero_comp_traits<DataFormat::Int32> {
-    using result_t = sfpi::vInt;
-    static inline __attribute__((always_inline)) sfpi::vUInt load() { return sfpi::dst_reg[0]; }
-    static inline __attribute__((always_inline)) result_t zero() { return 0; }
-    static inline __attribute__((always_inline)) result_t one() { return 1; }
-    static inline __attribute__((always_inline)) void store(result_t r) {
-        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = r;
-    }
+struct dst_container<DataFormat::Int16> {
+    using type = sfpi::vSMag16;
+};
+template <>
+struct dst_container<DataFormat::UInt16> {
+    using type = sfpi::vUInt16;
 };
 
-template <>
-struct zero_comp_traits<DataFormat::Int16> {
-    using result_t = sfpi::vInt;
-    static inline __attribute__((always_inline)) sfpi::vUInt load() {
-        sfpi::vSMag16 s = sfpi::dst_reg[0];
-        return sfpi::reinterpret<sfpi::vUInt>(s);
-    }
-    static inline __attribute__((always_inline)) result_t zero() { return 0; }
-    static inline __attribute__((always_inline)) result_t one() { return 1; }
-    static inline __attribute__((always_inline)) void store(result_t r) {
-        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = sfpi::reinterpret<sfpi::vSMag16>(r);
-    }
-};
+/**
+ * @brief Per-DataFormat load/store and 0/1 encoding for the comparison-to-zero result.
+ *
+ * @c load reads the element as raw @c vUInt bits for the shared predicate (see @ref _zero_comp_pred_);
+ * @c store writes @c zero/@c one back in FMT's native encoding. The 16/32-bit and float formats use
+ * the sfpi @c dst_reg[0] container; the 8-bit formats use a raw explicit-mode SFPLOAD/SFPSTORE.
+ *
+ * @tparam FMT: SFPU DataFormat (sfpu_math). Int32 / Int16 / Int8 signed, UInt16 / UInt8 unsigned, or
+ *         any IEEE float width (Float32/Float16/Float16_b all share the float path).
+ *
+ * @todo Once sfpi adds an 8-bit dst_reg[0] conversion (vSMag8/vUInt8), add Int8→vSMag8 /
+ *       UInt8→vUInt8 to dst_container and drop the is_8bit raw-SFPLOAD branches so 8-bit follows the
+ *       same container path as the other formats.
+ */
+template <DataFormat FMT>
+struct zero_comp_traits {
+    static constexpr bool is_8bit = FMT == DataFormat::Int8 || FMT == DataFormat::UInt8;
+    static constexpr bool is_float =
+        FMT == DataFormat::Float32 || FMT == DataFormat::Float16 || FMT == DataFormat::Float16_b;
+    static constexpr std::uint32_t sfpmem_mode =
+        FMT == DataFormat::Int8 ? ckernel::p_sfpu::sfpmem::INT8 : ckernel::p_sfpu::sfpmem::UINT8;
 
-template <>
-struct zero_comp_traits<DataFormat::UInt16> {
-    using result_t = sfpi::vInt;
-    static inline __attribute__((always_inline)) sfpi::vUInt load() {
-        sfpi::vUInt16 u = sfpi::dst_reg[0];
-        return sfpi::reinterpret<sfpi::vUInt>(u);
-    }
-    static inline __attribute__((always_inline)) result_t zero() { return 0; }
-    static inline __attribute__((always_inline)) result_t one() { return 1; }
-    static inline __attribute__((always_inline)) void store(result_t r) {
-        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = sfpi::reinterpret<sfpi::vUInt16>(r);
-    }
-};
+    // dst_reg[0] container carrying FMT's width/encoding (unused on the 8-bit raw path): vFloat for
+    // every float width, else the per-format integer container.
+    using container_t = std::conditional_t<is_float, sfpi::vFloat, typename dst_container<FMT>::type>;
+    using result_t = std::conditional_t<is_float, sfpi::vFloat, sfpi::vInt>;
 
-// sfpi's dst_reg has no 8-bit conversion operator, so Int8/UInt8 can't use the dst_reg[0] container
-// path; they issue raw SFPLOAD/SFPSTORE with an explicit sfpmem mode (INT8=SMAG8 / UInt8), bridged
-// through @c sfpi::vUInt(sfpu_t) / @c vInt::get(). SMAG8 loads the sign in bit 31, so the shared
-// predicate's @c u>>31 / @c u&0x7FFFFFFF read the same as the 16/32-bit signed paths.
-template <>
-struct zero_comp_traits<DataFormat::Int8> {
-    using result_t = sfpi::vInt;
     static inline __attribute__((always_inline)) sfpi::vUInt load() {
-        return sfpi::vUInt(__builtin_rvtt_sfpload(0, ckernel::p_sfpu::sfpmem::INT8, sfpi::SFPLOAD_ADDR_MODE_NOINC));
+        if constexpr (is_8bit) {
+            return sfpi::vUInt(__builtin_rvtt_sfpload(0, sfpmem_mode, sfpi::SFPLOAD_ADDR_MODE_NOINC));
+        } else {
+            // Copy-init (not a functional cast) so the read routes through vReg's conversion
+            // operator; the vNarrow container types (vUInt16/...) have only explicit ctors.
+            container_t c = sfpi::dst_reg[0];
+            return sfpi::reinterpret<sfpi::vUInt>(c);
+        }
     }
-    static inline __attribute__((always_inline)) result_t zero() { return 0; }
-    static inline __attribute__((always_inline)) result_t one() { return 1; }
+    static inline __attribute__((always_inline)) result_t zero() { return result_t(0); }
+    static inline __attribute__((always_inline)) result_t one() { return result_t(1); }
     static inline __attribute__((always_inline)) void store(result_t r) {
-        __builtin_rvtt_sfpstore(r.get(), 0, ckernel::p_sfpu::sfpmem::INT8, ckernel::ADDR_MOD_6);
-    }
-};
-
-template <>
-struct zero_comp_traits<DataFormat::UInt8> {
-    using result_t = sfpi::vInt;
-    static inline __attribute__((always_inline)) sfpi::vUInt load() {
-        return sfpi::vUInt(__builtin_rvtt_sfpload(0, ckernel::p_sfpu::sfpmem::UINT8, sfpi::SFPLOAD_ADDR_MODE_NOINC));
-    }
-    static inline __attribute__((always_inline)) result_t zero() { return 0; }
-    static inline __attribute__((always_inline)) result_t one() { return 1; }
-    static inline __attribute__((always_inline)) void store(result_t r) {
-        __builtin_rvtt_sfpstore(r.get(), 0, ckernel::p_sfpu::sfpmem::UINT8, ckernel::ADDR_MOD_6);
-    }
-};
-
-template <>
-struct zero_comp_traits<DataFormat::Float32> {
-    using result_t = sfpi::vFloat;
-    static inline __attribute__((always_inline)) sfpi::vUInt load() {
-        sfpi::vFloat f = sfpi::dst_reg[0];
-        return sfpi::reinterpret<sfpi::vUInt>(f);
-    }
-    static inline __attribute__((always_inline)) result_t zero() { return 0.0f; }
-    static inline __attribute__((always_inline)) result_t one() { return 1.0f; }
-    static inline __attribute__((always_inline)) void store(result_t r) {
-        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = r;
+        if constexpr (is_8bit) {
+            __builtin_rvtt_sfpstore(r.get(), 0, sfpmem_mode, ckernel::ADDR_MOD_6);
+        } else {
+            sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = sfpi::reinterpret<container_t>(r);
+        }
     }
 };
 
@@ -121,8 +90,7 @@ struct zero_comp_traits<DataFormat::Float32> {
  * signed integers as sign-magnitude and floats as IEEE, both with the sign in bit 31): the sign bit
  * @c u>>31 and the magnitude-zero test @c (u&0x7FFFFFFF)==0. Masking the sign bit makes the
  * magnitude test hold for both +0 (0x00000000) and -0 (0x80000000), so -0.0 / sign-magnitude -0
- * count as zero — matching IEEE, where -0.0 == 0. "Negative" is then @c sign && magnitude-nonzero,
- * which excludes -0.0. This matches the golden: eqz/gez/lez accept -0.0, while ltz/nez reject it.
+ * count as zero, matching IEEE (-0.0 == 0); "negative" is @c sign && magnitude-nonzero, excluding -0.0.
  *
  * @tparam COMP_MODE: Comparison-to-zero mode, values =
  *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
@@ -178,10 +146,9 @@ inline void _init_zero_comp_() {
  * counter, so the loop needs no dst_reg++.
  *
  * @tparam APPROXIMATION_MODE: Unused (no approx path); retained for dispatcher signature symmetry.
- * @tparam FMT: SFPU DataFormat (sfpu_math): Int32/Int16/Int8/UInt16/UInt8 use their own traits; any
- *         IEEE float width (Float32/Float16/Float16_b) maps to the width-agnostic Float32 traits
- *         (the SFPLOAD/SFPSTORE resolve the actual width from the dest format config). Anything else
- *         is a compile error.
+ * @tparam FMT: SFPU DataFormat (sfpu_math): Int32/Int16/Int8/UInt16/UInt8, or any IEEE float width
+ *         (Float32/Float16/Float16_b share the width-agnostic float path — the SFPLOAD/SFPSTORE
+ *         resolve the actual width from the dest format config). Anything else is a compile error.
  * @tparam COMP_MODE: Comparison-to-zero mode.
  * @tparam ITERATIONS: Number of SFP-row pairs to process (8 for a 32×16 face).
  * @note Requires @ref _init_zero_comp_ to have programmed @c vConstIntPrgm0 and @c ADDR_MOD_6.
@@ -196,9 +163,7 @@ inline void _calculate_zero_comp_() {
         is_int_fmt || is_float_fmt,
         "_calculate_zero_comp_: unsupported FMT (expected an integer format or an IEEE float width)");
 
-    // All float widths share the width-agnostic Float32 traits; integer formats use their own.
-    constexpr DataFormat TRAITS_FMT = is_int_fmt ? FMT : DataFormat::Float32;
-    using traits = zero_comp_traits<TRAITS_FMT>;
+    using traits = zero_comp_traits<FMT>;
 
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {

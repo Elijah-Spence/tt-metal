@@ -78,6 +78,10 @@ void init_unary_sfpu_operation_quasar()
     {
         _init_gelu_();
     }
+    else if constexpr (is_zero_comp_op(OPERATION))
+    {
+        _init_zero_comp_();
+    }
 }
 
 /**
