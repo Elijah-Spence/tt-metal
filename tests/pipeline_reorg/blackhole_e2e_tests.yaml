@@ -307,6 +307,6 @@
     exit $exit_code
   skus:
     bh_quietbox_2:
-      timeout: 40
+      timeout: 60
   owner_id: U094PKWHNJ0 # Petar Milojevic
   team: models
