@@ -40,6 +40,7 @@ on:
           - sdpa
           - bh-sdpa-nightly-integration
           - bh-ring-sdpa-perf
+          - bh-host-io-fast-unit-viommu
       build-type:
         required: false
         type: choice
