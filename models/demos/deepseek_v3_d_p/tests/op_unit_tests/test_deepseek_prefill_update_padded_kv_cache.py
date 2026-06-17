@@ -249,10 +249,13 @@ def test_update_padded_kv_cache_single_iteration_prefill(
 
     # slot_idx and kv_actual_global are device tensors (not in the program hash) and layer_idx is
     # hashed, so exactly one cached program per layer is reused across all users — entries == num_layers.
-    assert mesh_device.num_program_cache_entries() == num_layers, (
-        f"op must reuse one cached program per layer across users; expected {num_layers} entries, "
-        f"got {mesh_device.num_program_cache_entries()}"
-    )
+    # Skip for fp8: its tensors are built via ttnn.typecast, which adds its own cached programs and
+    # pollutes the global count. The op's per-layer reuse is already covered by the bf16/bfp8 cases.
+    if dtype != ttnn.fp8_e4m3:
+        assert mesh_device.num_program_cache_entries() == num_layers, (
+            f"op must reuse one cached program per layer across users; expected {num_layers} entries, "
+            f"got {mesh_device.num_program_cache_entries()}"
+        )
 
     # Gather the cache the same way (concat sp shards on seq, one tp copy).
     cache_host = ttnn.to_torch(kv_cache, mesh_composer=composer).to(torch.bfloat16)
@@ -450,11 +453,13 @@ def test_update_padded_kv_cache_multi_iteration_prefill(
 
     # kv_actual_global and slot_idx are device tensors (not in the program hash) and layer_idx is
     # hashed, so exactly one cached program per layer is reused across all iterations and users —
-    # entries == num_layers.
-    assert mesh_device.num_program_cache_entries() == num_layers, (
-        f"op must reuse one cached program per layer across iterations/users; expected {num_layers} "
-        f"entries, got {mesh_device.num_program_cache_entries()}"
-    )
+    # entries == num_layers. Skip for fp8: its tensors are built via ttnn.typecast, which adds its own
+    # cached programs and pollutes the global count. Per-layer reuse is covered by the bf16/bfp8 cases.
+    if dtype != ttnn.fp8_e4m3:
+        assert mesh_device.num_program_cache_entries() == num_layers, (
+            f"op must reuse one cached program per layer across iterations/users; expected {num_layers} "
+            f"entries, got {mesh_device.num_program_cache_entries()}"
+        )
 
     cache_host = ttnn.to_torch(kv_cache, mesh_composer=composer).to(torch.bfloat16)[
         :, :1, :, :
