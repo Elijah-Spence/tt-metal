@@ -53,8 +53,15 @@ inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand = 0
     _configure_default_alu_data_format_state_<false /* IMPLIED_MATH_FORMAT */, EN_32BIT_DEST>(srcA_format, srcB_format);
 
     if constexpr (src_b_bcast_type == BroadcastType::NONE) {
-        _llk_math_eltwise_unary_datacopy_init_<type, EN_32BIT_DEST, unpack_to_dest>(
-            num_rows /*num_rows_per_matrix*/, 1 /*num_matrices*/, operand_id /*buf_desc_id*/);
+        // TEMPORARY: For a 32-bit unpack-to-dest operand the unpacker writes DEST directly and math is a
+        // sync-only forwarder, so there is no math MOP to program. Decide this from the
+        // compile-time unpack_dst_format (llk_math_is_unpack_to_dest_32b) rather than reading the
+        // unpacker's bd_table on the math thread, that CFG read perturbs the math tile counters
+        // (TILE_COUNTERS fault). Passing unpack_to_dest=false keeps the bd_table block uncompiled.
+        if (!(unpack_to_dest && llk_math_is_unpack_to_dest_32b(operand_id))) {
+            _llk_math_eltwise_unary_datacopy_init_<type, EN_32BIT_DEST>(
+                num_rows /*num_rows_per_matrix*/, 1 /*num_matrices*/);
+        }
     } else {
         static_assert(type == DataCopyType::B2D);
         const TileShape tile_shape = llk_math_eltwise_unary_broadcast_tile_shape(operand);
@@ -91,8 +98,11 @@ inline void llk_math_eltwise_unary_datacopy(const std::uint32_t dst_index, const
         const TileShape tile_shape = llk_math_eltwise_unary_broadcast_tile_shape(operand);
         _llk_math_eltwise_unary_broadcast_<src_b_bcast_type, false, EN_32BIT_DEST>(dst_index, tile_shape);
     } else {
-        _llk_math_eltwise_unary_datacopy_<unpack_to_dest>(
-            num_faces * face_r_dim, dst_index, operand_id /*buf_desc_id*/);
+        // 32-bit unpack-to-dest: math is a sync-only forwarder (unpacker wrote DEST), no MOP to run.
+        // Gate on the compile-time unpack_dst_format, not a bd_table read on the math thread.
+        if (!(unpack_to_dest && llk_math_is_unpack_to_dest_32b(operand_id))) {
+            _llk_math_eltwise_unary_datacopy_(num_faces * face_r_dim, dst_index);
+        }
     }
 }
 
@@ -118,8 +128,12 @@ inline void llk_math_eltwise_unary_datacopy_block(
     const std::uint32_t face_r_dim = get_operand_face_r_dim(operand_id);
     const std::uint32_t num_rows = num_faces * face_r_dim;
 
-    for (std::uint32_t dst_index = start_dst_index; dst_index < start_dst_index + ntiles; dst_index++) {
-        _llk_math_eltwise_unary_datacopy_<unpack_to_dest>(num_rows, dst_index, operand_id /*buf_desc_id*/);
+    // TEMPORARY: 32-bit unpack-to-dest: math is a sync-only forwarder, no MOP to run. Gate on compile-time
+    // unpack_dst_format rather than a bd_table read on the math thread.
+    if (!(unpack_to_dest && llk_math_is_unpack_to_dest_32b(operand_id))) {
+        for (std::uint32_t dst_index = start_dst_index; dst_index < start_dst_index + ntiles; dst_index++) {
+            _llk_math_eltwise_unary_datacopy_(num_rows, dst_index);
+        }
     }
 }
 
