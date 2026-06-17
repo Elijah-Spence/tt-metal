@@ -390,7 +390,7 @@ std::vector<uint32_t> pack_as_bfp_tiles(
             std::vector<uint8_t> exponents_with_padding;
             exponents_with_padding.reserve(l1_alignment * subtiles_in_tile_row * subtiles_in_tile_col);
 
-            int fp32_element_base = row_major_input ? 0 : (tile_index * num_float_in_tile);
+            size_t fp32_element_base = row_major_input ? 0 : (tile_index * num_float_in_tile);
 
             for (int tr = 0; tr < subtiles_in_tile_row; ++tr) {
                 for (int tc = 0; tc < subtiles_in_tile_col; ++tc) {
@@ -398,7 +398,7 @@ std::vector<uint32_t> pack_as_bfp_tiles(
                         std::vector<uint32_t> single_row;
                         // populate a single row
                         for (int j = 0; j < subtile_cols; ++j) {
-                            int data_index;
+                            size_t data_index;
                             if (row_major_input) {
                                 data_index =
                                     (tr * face_H + i) * tile_W + (tc * face_W + j) + (num_float_in_tile * tile_index);
