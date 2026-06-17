@@ -485,3 +485,44 @@ def test_deepseek_v3_mla_tilize_trace_mode(
     ), f"Shape mismatch: {torch_output_from_tt.shape} != {torch_output_tensor.shape}"
 
     assert_equal(torch_output_tensor, torch_output_from_tt)
+
+
+# Regression coverage for https://github.com/tenstorrent/tt-metal/issues/45331.
+# Calls ttnn.tilize directly on a width-sharded DRAM ROW_MAJOR input that
+# previously sent the op into TilizeMultiCoreDefaultProgramFactory, whose
+# full-row CB allocation (~5.5 MB) exceeded the 1.5 MB L1 per-core budget on
+# Wormhole. The ttnn::tilize wrapper now reroutes such cases via interleaved
+# DRAM so TilizeMultiCoreBlockProgramFactory (bounded CBs) is used instead.
+# The assertions are intentionally minimal: this test exists to catch a crash
+# regression, not to validate full numerical fidelity of tilize.
+@pytest.mark.parametrize(
+    "tensor_shape, shard_shape, num_cores",
+    [
+        ((2048, 42752), (2048, 3584), 12),
+    ],
+)
+def test_tilize_width_sharded_dram_input_45331(device, tensor_shape, shard_shape, num_cores):
+    torch.manual_seed(0)
+    torch_tensor = torch.randn(tensor_shape, dtype=torch.bfloat16)
+
+    shard_grid = ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(num_cores - 1, 0))})
+    shard_spec = ttnn.ShardSpec(shard_grid, shard_shape, ttnn.ShardOrientation.ROW_MAJOR)
+    sharded_dram_cfg = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        ttnn.BufferType.DRAM,
+        shard_spec,
+    )
+
+    tt_rm = ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        memory_config=sharded_dram_cfg,
+        device=device,
+    )
+
+    tt_tile = ttnn.tilize(tt_rm, memory_config=sharded_dram_cfg, use_multicore=True)
+
+    assert tt_tile.layout == ttnn.TILE_LAYOUT
+    torch_out = ttnn.to_torch(tt_tile)
+    assert torch.equal(torch_tensor, torch_out), "tilize round-trip mismatch"
