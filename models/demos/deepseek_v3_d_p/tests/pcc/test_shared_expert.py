@@ -48,6 +48,9 @@ def shared_expert_shape_params():
     params = []
     for name, config, extended in SHARED_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
+        if name == "gpt_oss":
+            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
+            marks = marks + (pytest.mark.gpt_oss_model,)
         params.append(
             pytest.param(
                 config.EMB_SIZE,

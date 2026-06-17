@@ -96,7 +96,8 @@
   category: experimental
 
 - name: ttnn nightly experimental tests (blackhole)
-  cmd: 'pytest tests/ttnn/nightly/unit_tests/operations/experimental -xv -k "not performance" --timeout=600'
+  # gpt_oss_model: gpt-oss DeepSeek prefill params run on Wormhole only, excluded on Blackhole.
+  cmd: 'pytest tests/ttnn/nightly/unit_tests/operations/experimental -xv -k "not performance" -m "not gpt_oss_model" --timeout=600'
   skus:
     bh_p100:
       timeout: 35

@@ -175,6 +175,9 @@ def single_routed_expert_token_sweep_params():
     params = []
     for name, config, extended in SINGLE_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
+        if name == "gpt_oss":
+            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
+            marks = marks + (pytest.mark.gpt_oss_model,)
         for num_tokens, tag in _TOKEN_SWEEP:
             params.append(
                 pytest.param(num_tokens, config.EMB_SIZE, config.MOE_INTERMEDIATE_SIZE, marks=marks, id=f"{name}-{tag}")
@@ -300,6 +303,9 @@ def single_routed_expert_faked_params():
     params = []
     for name, config, extended in SINGLE_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
+        if name == "gpt_oss":
+            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
+            marks = marks + (pytest.mark.gpt_oss_model,)
         for alloc, active, tag in _FAKED_SWEEP:
             params.append(
                 pytest.param(

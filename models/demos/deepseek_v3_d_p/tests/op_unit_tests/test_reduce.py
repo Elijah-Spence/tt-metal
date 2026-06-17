@@ -233,6 +233,9 @@ def reduce_shape_params():
     params = []
     for name, config, extended in REDUCE_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
+        if name == "gpt_oss":
+            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
+            marks = marks + (pytest.mark.gpt_oss_model,)
         params.append(pytest.param(3200, config.EMB_SIZE, config.NUM_EXPERTS_PER_TOKEN, marks=marks, id=name))
     return params
 
