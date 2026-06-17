@@ -16,6 +16,7 @@ import torch
 from loguru import logger
 
 import ttnn
+from models.common.utility_functions import is_blackhole
 from models.demos.deepseek_v3_d_p.utils.kv_cache_utils import init_kvpe_cache
 
 # MLA KVPE head dim (kv_lora_rank=512 + qk_rope_head_dim=64). The op is a pure page copy, so a
@@ -73,6 +74,8 @@ def test_update_padded_kv_cache_single_device(mesh_device, dtype, layout):
     sent — i.e. the input read back, which has already been through the same dtype encode/decode. This
     isolates the op: any dtype quantization is identical on both sides, so a perfect copy is exactly
     equal. (Comparing against the original bf16 reference would instead measure the bfp8/fp8 round-trip.)"""
+    if dtype == ttnn.fp8_e4m3 and not is_blackhole():
+        pytest.skip("FP8_E4M3 is Blackhole-only")
     sp_axis = 0
     sp = mesh_device.shape[sp_axis]  # == 1
     tile = ttnn.TILE_SIZE
@@ -182,6 +185,8 @@ def test_update_padded_kv_cache_single_iteration_prefill(
     The op is a pure copy, so the reference is the input read back (already through the same dtype
     encode/decode), and the check is bit-EXACT equality -- not PCC against the bf16 source, which would
     only measure the bfp8/fp8 round-trip rather than the op."""
+    if dtype == ttnn.fp8_e4m3 and not is_blackhole():
+        pytest.skip("FP8_E4M3 is Blackhole-only")
     if is_ci_env or is_ci_v2_env:
         pytest.skip("CI runs only the small padded_partial case (multi-iteration); this is a subset of it")
     sp_axis, tp_axis = 0, 1
@@ -344,6 +349,8 @@ def test_update_padded_kv_cache_multi_iteration_prefill(
     rebuilt, and every (user, layer) slot's valid prefix is checked for bit-exact equality against
     the inputs sent (read back through the same dtype encode/decode).
     """
+    if dtype == ttnn.fp8_e4m3 and not is_blackhole():
+        pytest.skip("FP8_E4M3 is Blackhole-only")
     if (is_ci_env or is_ci_v2_env) and not (config_name == "small" and scenario == "padded_partial"):
         pytest.skip("CI runs only the small padded_partial case; the others are subsets of it")
     sp_axis, tp_axis = 0, 1
