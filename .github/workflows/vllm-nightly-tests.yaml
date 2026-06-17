@@ -3,6 +3,10 @@ name: "vLLM nightly tests"
 on:
   workflow_dispatch:
     inputs:
+      use-artifacts-from-run:
+        description: "Reuse build+wheel from this run id (skip rebuild) — trial only"
+        required: false
+        type: string
       vllm-commit:
         description: "vLLM branch or sha"
         required: false
@@ -69,6 +73,7 @@ jobs:
     with:
       build-type: ${{ inputs.build-type || 'Release' }}
       platform: ${{ inputs.platform || 'Ubuntu 22.04' }}
+      use-artifacts-from-run: ${{ inputs.use-artifacts-from-run || '' }}
       enable-lto: ${{ inputs.enable-lto || false }}
       build-wheel: true
   vllm-tests:
