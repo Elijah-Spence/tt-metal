@@ -5,84 +5,162 @@
 
 #include <cstdint>
 
-#include "ckernel_addrmod.h"
+#include "ckernel_defs.h"
 #include "ckernel_trisc_common.h"
 #include "cmath_common.h"
 #include "llk_defs.h"
-#include "llk_math_eltwise_sfpu_common.h"
-#include "lltt.h"
 #include "sfpi.h"
 
 namespace ckernel {
 namespace sfpu {
-// fp16b bit patterns (upper 16 bits of the corresponding fp32), loaded as
-// SFPLOADI immediates in MOD0_FLOATB mode.
-constexpr std::uint32_t FP16B_ONE = 0x3F80;   // 1.0f
-constexpr std::uint32_t FP16B_ZERO = 0x0000;  // 0.0f
-
-// imm12_math[11]: makes SFPSETCC read the source as FP32/SMAG32 (sign-magnitude) rather than
-// two's-complement INT32. SFPLOAD only ever produces FP32, SMAG32, or UINT32 in the LREG (signed
-// integers load as sign-magnitude SMAG32, never 2's-complement), so this bit is set for every
-// format we handle — both float and integer. The sign tests (SFPSETCC modes 0/4) read the sign
-// bit regardless of this bit; it only governs the zero test, where SMAG32==0 correctly treats
-// sign-magnitude ±0 as zero (2's-complement would miss -0 = 0x80000000).
-constexpr std::uint32_t SFPSETCC_IMM_FP32 = 0x800;
 
 /**
- * @brief Whether FMT is read/written as an integer (vs float) — drives the 1/0 result encoding.
+ * @brief Per-DataFormat sfpi vector type and 0/1 encoding for the comparison-to-zero result.
  *
- * Also gates the sfpmem mode: integers take their explicit width from the canonical
- * @ref _sfpu_sfpmem_type_<FMT>() selector (Int32→INT32, Int16→INT16, Int8→INT8, UInt8→UINT8,
- * UInt16→UINT16), while floats use sfpmem::DEFAULT (the explicit fp16 modes decode the fp16b
- * boolean result as NaN).
+ * @c load reads the element and reinterprets the bits as a @c vUInt for the shared predicate (see
+ * @ref _zero_comp_pred_); @c store writes @c zero/@c one back in FMT's native encoding. The 16/32-bit
+ * and float formats ride the sfpi @c dst_reg[0] container that carries FMT's width (vInt→INT32,
+ * vSMag16→INT16, vUInt16→UINT16, vFloat→implied float). The 8-bit formats have no such container
+ * (sfpi exposes no 8-bit dst_reg conversion), so Int8/UInt8 issue an explicit-mode SFPLOAD/SFPSTORE
+ * (sfpmem INT8 / UINT8) bridged through @c vUInt(sfpu_t) / @c vInt::get().
  *
- * @note Int8/UInt8 use their native Quasar dest format (SMAG8 / UINT8) — these are real
- *       register-file formats, so the 8-bit datapath round-trips natively. UInt16 is the exception:
- *       it is not a Quasar register-file format at all (absent from the unpacker / SrcA-B / dest /
- *       packer encodings — see VALID_QUASAR_SRC/DEST_REG_FORMATS; Int8/UInt8 are present, hence
- *       native). It is therefore routed through the Int16/SMAG16 container — unpack and pack run in
- *       Int16 (the known-good 16-bit bit-passthrough path) and only the SFPU accesses the
- *       unsigned-16 semantics via sfpmem::UINT16. The caller must keep the unpack/pack/math formats
- *       at Int16 and select FMT=UInt16 only to pick that sfpmem mode.
- *
- * @tparam FMT: SFPU DataFormat (sfpu_math): Int32 / Int16 / Int8 signed, UInt16 / UInt8 unsigned.
+ * @tparam FMT: SFPU DataFormat (sfpu_math). Int32 / Int16 / Int8 signed, UInt16 / UInt8 unsigned, or
+ *         Float32 for every float width (the dispatcher routes Float16/Float16_b through the Float32
+ *         path).
  */
 template <DataFormat FMT>
-inline constexpr bool _zero_comp_is_int_() {
-    return FMT == DataFormat::Int32 || FMT == DataFormat::Int16 || FMT == DataFormat::Int8 ||
-           FMT == DataFormat::UInt16 || FMT == DataFormat::UInt8;
-}
+struct zero_comp_traits;
+
+template <>
+struct zero_comp_traits<DataFormat::Int32> {
+    using result_t = sfpi::vInt;
+    static inline __attribute__((always_inline)) sfpi::vUInt load() { return sfpi::dst_reg[0]; }
+    static inline __attribute__((always_inline)) result_t zero() { return 0; }
+    static inline __attribute__((always_inline)) result_t one() { return 1; }
+    static inline __attribute__((always_inline)) void store(result_t r) {
+        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = r;
+    }
+};
+
+template <>
+struct zero_comp_traits<DataFormat::Int16> {
+    using result_t = sfpi::vInt;
+    static inline __attribute__((always_inline)) sfpi::vUInt load() {
+        sfpi::vSMag16 s = sfpi::dst_reg[0];
+        return sfpi::reinterpret<sfpi::vUInt>(s);
+    }
+    static inline __attribute__((always_inline)) result_t zero() { return 0; }
+    static inline __attribute__((always_inline)) result_t one() { return 1; }
+    static inline __attribute__((always_inline)) void store(result_t r) {
+        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = sfpi::reinterpret<sfpi::vSMag16>(r);
+    }
+};
+
+template <>
+struct zero_comp_traits<DataFormat::UInt16> {
+    using result_t = sfpi::vInt;
+    static inline __attribute__((always_inline)) sfpi::vUInt load() {
+        sfpi::vUInt16 u = sfpi::dst_reg[0];
+        return sfpi::reinterpret<sfpi::vUInt>(u);
+    }
+    static inline __attribute__((always_inline)) result_t zero() { return 0; }
+    static inline __attribute__((always_inline)) result_t one() { return 1; }
+    static inline __attribute__((always_inline)) void store(result_t r) {
+        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = sfpi::reinterpret<sfpi::vUInt16>(r);
+    }
+};
+
+// sfpi's dst_reg has no 8-bit conversion operator, so Int8/UInt8 can't use the dst_reg[0] container
+// path; they issue raw SFPLOAD/SFPSTORE with an explicit sfpmem mode (INT8=SMAG8 / UInt8), bridged
+// through @c sfpi::vUInt(sfpu_t) / @c vInt::get(). SMAG8 loads the sign in bit 31, so the shared
+// predicate's @c u>>31 / @c u&0x7FFFFFFF read the same as the 16/32-bit signed paths.
+template <>
+struct zero_comp_traits<DataFormat::Int8> {
+    using result_t = sfpi::vInt;
+    static inline __attribute__((always_inline)) sfpi::vUInt load() {
+        return sfpi::vUInt(__builtin_rvtt_sfpload(0, ckernel::p_sfpu::sfpmem::INT8, sfpi::SFPLOAD_ADDR_MODE_NOINC));
+    }
+    static inline __attribute__((always_inline)) result_t zero() { return 0; }
+    static inline __attribute__((always_inline)) result_t one() { return 1; }
+    static inline __attribute__((always_inline)) void store(result_t r) {
+        __builtin_rvtt_sfpstore(r.get(), 0, ckernel::p_sfpu::sfpmem::INT8, ckernel::ADDR_MOD_6);
+    }
+};
+
+template <>
+struct zero_comp_traits<DataFormat::UInt8> {
+    using result_t = sfpi::vInt;
+    static inline __attribute__((always_inline)) sfpi::vUInt load() {
+        return sfpi::vUInt(__builtin_rvtt_sfpload(0, ckernel::p_sfpu::sfpmem::UINT8, sfpi::SFPLOAD_ADDR_MODE_NOINC));
+    }
+    static inline __attribute__((always_inline)) result_t zero() { return 0; }
+    static inline __attribute__((always_inline)) result_t one() { return 1; }
+    static inline __attribute__((always_inline)) void store(result_t r) {
+        __builtin_rvtt_sfpstore(r.get(), 0, ckernel::p_sfpu::sfpmem::UINT8, ckernel::ADDR_MOD_6);
+    }
+};
+
+template <>
+struct zero_comp_traits<DataFormat::Float32> {
+    using result_t = sfpi::vFloat;
+    static inline __attribute__((always_inline)) sfpi::vUInt load() {
+        sfpi::vFloat f = sfpi::dst_reg[0];
+        return sfpi::reinterpret<sfpi::vUInt>(f);
+    }
+    static inline __attribute__((always_inline)) result_t zero() { return 0.0f; }
+    static inline __attribute__((always_inline)) result_t one() { return 1.0f; }
+    static inline __attribute__((always_inline)) void store(result_t r) {
+        sfpi::dst_reg[0].mode<>(ckernel::ADDR_MOD_6) = r;
+    }
+};
 
 /**
- * @brief Number of instructions in the recorded replay body for a comparison mode.
+ * @brief Lanes of @c u satisfying COMP_MODE against zero, read off the raw bit pattern.
  *
- * Format-independent (Int32 and float bodies have identical instruction counts): eqz/nez predicate
- * with a single SFPSETCC (7). The strict ltz/gtz AND a second SFPSETCC (8). gtez/ltez are the
- * lane-wise complements of ltz/gtz — they predicate the same strictly-signed lanes but default the
- * result to 1 and write 0 — so they share the strict body's length (8).
+ * Each mode is built from two bit tests that read identically across every format (Quasar loads
+ * signed integers as sign-magnitude and floats as IEEE, both with the sign in bit 31): the sign bit
+ * @c u>>31 and the magnitude-zero test @c (u&0x7FFFFFFF)==0. Masking the sign bit makes the
+ * magnitude test hold for both +0 (0x00000000) and -0 (0x80000000), so -0.0 / sign-magnitude -0
+ * count as zero — matching IEEE, where -0.0 == 0. "Negative" is then @c sign && magnitude-nonzero,
+ * which excludes -0.0. This matches the golden: eqz/gez/lez accept -0.0, while ltz/nez reject it.
  *
- * @tparam COMP_MODE: Comparison-to-zero mode selecting the body to record.
- * @return Recorded body length in instructions.
+ * @tparam COMP_MODE: Comparison-to-zero mode, values =
+ *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
  */
 template <SfpuType COMP_MODE>
-inline constexpr std::uint32_t _zero_comp_replay_len_() {
-    if constexpr (
-        COMP_MODE == SfpuType::less_than_zero || COMP_MODE == SfpuType::greater_than_zero ||
-        COMP_MODE == SfpuType::greater_than_equal_zero || COMP_MODE == SfpuType::less_than_equal_zero) {
-        return 8;
+inline __attribute__((always_inline)) sfpi::vBool _zero_comp_pred_(sfpi::vUInt u) {
+    // Magnitude mask sourced from a const register (programmed once in _calculate_zero_comp_)
+    // instead of two per-iteration sfploadi. Same (u & 0x7FFFFFFF)==0 logic -> ±0 still correct.
+    const sfpi::vUInt mag = u & sfpi::reinterpret<sfpi::vUInt>(sfpi::vInt(sfpi::vConstIntPrgm0));
+    if constexpr (COMP_MODE == SfpuType::equal_zero) {
+        return mag == 0u;  // ±0
+    } else if constexpr (COMP_MODE == SfpuType::not_equal_zero) {
+        return mag != 0u;
+    } else if constexpr (COMP_MODE == SfpuType::less_than_zero) {
+        return ((u >> 31) != 0u) && (mag != 0u);  // sign set and nonzero -> excludes -0.0
+    } else if constexpr (COMP_MODE == SfpuType::greater_than_zero) {
+        return ((u >> 31) == 0u) && (mag != 0u);  // sign clear and nonzero
+    } else if constexpr (COMP_MODE == SfpuType::greater_than_equal_zero) {
+        return ((u >> 31) == 0u) || (mag == 0u);  // sign clear or zero (incl ±0)
+    } else {                                      // less_than_equal_zero
+        return ((u >> 31) != 0u) || (mag == 0u);  // sign set or zero (incl ±0)
     }
-    return 7;
 }
 
 /**
- * @brief Program ADDR_MOD_6 (dest.incr=2) so the replayed SFPSTORE advances the dest counter.
+ * @brief Program the shared comparison-to-zero state once: the magnitude-mask const register and
+ * the dest-increment addr mod.
  *
- * Quasar's shared SFPU init only programs ADDR_MOD_7 (incr=0); this is additive and leaves
- * ADDR_MOD_7 in place for the body's SFPLOAD.
+ * @c vConstIntPrgm0 holds the 0x7FFFFFFF magnitude mask so @ref _zero_comp_pred_ clears the sign
+ * bit with a single @c sfpand (no per-iteration immediate build). @c ADDR_MOD_6 (dest.incr=2) lets
+ * the body's SFPSTORE advance the dest counter, so @ref _calculate_zero_comp_ needs no dst_reg++.
+ * Both are HW state shared across every COMP_MODE/FMT instantiation, so programming them once here
+ * (rather than per @ref _calculate_zero_comp_ call) keeps them out of the per-tile loop body.
  *
  * @note Call once after @ref _llk_math_eltwise_sfpu_init_ and before @ref _calculate_zero_comp_.
  */
 inline void _init_zero_comp_() {
+    sfpi::vConstIntPrgm0 = 0x7FFFFFFF;
     addr_mod_t{
         .srca = {.incr = 0},
         .srcb = {.incr = 0},
@@ -92,180 +170,45 @@ inline void _init_zero_comp_() {
 }
 
 /**
- * @brief Predicate (SFPSETCC) the lanes of LREG0 satisfying SETCC_MOD1.
- *
- * Reads LREG0 as FP32/SMAG32 (see @ref SFPSETCC_IMM_FP32) — correct for both float and the
- * sign-magnitude integers SFPLOAD produces.
- *
- * @tparam SETCC_MOD1: SFPSETCC mod1 predicate, e.g. sfpi::SFPSETCC_MOD1_LREG_EQ0.
- */
-template <std::uint32_t SETCC_MOD1>
-inline __attribute__((always_inline)) void _zero_comp_setcc_() {
-    TTI_SFPSETCC(SFPSETCC_IMM_FP32, p_sfpu::LREG0, SETCC_MOD1);
-}
-
-/**
- * @brief Load the boolean result (0 or 1) into the result register LREG1 in FMT's encoding.
- *
- * Integer formats use SFPLOADI SHORT (INT16), which sign-extends the immediate into the full LREG
- * (1 -> 0x0000_0001) for a clean result at any store width. SHORT is used rather than USHORT
- * (UINT16) because USHORT left-shifts the immediate by 10 inside the LREG.
- *
- * @tparam FMT: SFPU DataFormat (sfpu_math); integer → integer 0/1, float → fp16b 0.0/1.0.
- * @tparam VALUE: false → 0, true → 1.
- */
-template <DataFormat FMT, bool VALUE>
-inline __attribute__((always_inline)) void _zero_comp_loadi_bool_() {
-    if constexpr (_zero_comp_is_int_<FMT>()) {
-        TTI_SFPLOADI(p_sfpu::LREG1, sfpi::SFPLOADI_MOD0_SHORT, VALUE ? 1 : 0);
-    } else {
-        TTI_SFPLOADI(p_sfpu::LREG1, sfpi::SFPLOADI_MOD0_FLOATB, VALUE ? FP16B_ONE : FP16B_ZERO);
-    }
-}
-
-/**
- * @brief Result value every lane is defaulted to before COMP_MODE's predication runs.
- *
- * eqz/nez/ltz/gtz default to 0 and write 1 into the matching lanes. gtez/ltez invert this: they
- * default to 1 and write 0 into the strictly-signed lanes (the complement of ltz/gtz).
- *
- * @tparam COMP_MODE: Comparison-to-zero mode.
- * @return true (lane default 1) for gtez/ltez, false (lane default 0) otherwise.
- */
-template <SfpuType COMP_MODE>
-inline constexpr bool _zero_comp_default_() {
-    return COMP_MODE == SfpuType::greater_than_equal_zero || COMP_MODE == SfpuType::less_than_equal_zero;
-}
-
-/**
- * @brief Predicate the lanes satisfying COMP_MODE and write the result into them.
- *
- * Successive SFPSETCC calls AND-combine and SFPLOADI writes only the currently predicated lanes;
- * FMT selects the 1/0 encoding (via @ref _zero_comp_loadi_bool_), not the SFPSETCC sequence.
- * eqz/nez use a single test and write 1. The strict ltz/gtz AND a sign test with NE0 (excluding
- * ±0) and write 1. gtez/ltez are the lane-wise complements of ltz/gtz: the body defaults every
- * lane to 1 (see @ref _zero_comp_default_), so they predicate the same strictly-signed lanes and
- * write 0, leaving every other lane at 1. This folds the opposite-signed zero into the true set
- * for free — the NE0 test already excludes ±0 from the strict set, so the complement includes it.
- *
- * @tparam FMT: SFPU DataFormat (sfpu_math).
- * @tparam COMP_MODE: Comparison-to-zero mode, values =
- *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
- */
-template <DataFormat FMT, SfpuType COMP_MODE>
-struct zero_comp_fill;
-
-template <DataFormat FMT>
-struct zero_comp_fill<FMT, SfpuType::equal_zero> {
-    static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_EQ0>();  // == 0
-        _zero_comp_loadi_bool_<FMT, true>();
-    }
-};
-
-template <DataFormat FMT>
-struct zero_comp_fill<FMT, SfpuType::not_equal_zero> {
-    static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();  // != 0
-        _zero_comp_loadi_bool_<FMT, true>();
-    }
-};
-
-template <DataFormat FMT>
-struct zero_comp_fill<FMT, SfpuType::less_than_zero> {
-    static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_LT0>();  // negative (sign set, incl -0)
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();  // AND nonzero -> strictly < 0
-        _zero_comp_loadi_bool_<FMT, true>();
-    }
-};
-
-template <DataFormat FMT>
-struct zero_comp_fill<FMT, SfpuType::greater_than_zero> {
-    static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_GTE0>();  // positive (sign clear, incl +0)
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();   // AND nonzero -> strictly > 0
-        _zero_comp_loadi_bool_<FMT, true>();
-    }
-};
-
-template <DataFormat FMT>
-struct zero_comp_fill<FMT, SfpuType::greater_than_equal_zero> {
-    static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_LT0>();  // negative (sign set, incl -0)
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();  // AND nonzero -> strictly < 0
-        _zero_comp_loadi_bool_<FMT, false>();               // write 0 there; the >= 0 lanes keep the default 1
-    }
-};
-
-template <DataFormat FMT>
-struct zero_comp_fill<FMT, SfpuType::less_than_equal_zero> {
-    static inline __attribute__((always_inline)) void apply() {
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_GTE0>();  // positive (sign clear, incl +0)
-        _zero_comp_setcc_<sfpi::SFPSETCC_MOD1_LREG_NE0>();   // AND nonzero -> strictly > 0
-        _zero_comp_loadi_bool_<FMT, false>();                // write 0 there; the <= 0 lanes keep the default 1
-    }
-};
-
-/**
- * @brief Compute the comparison-to-zero boolean (1/0) for one SFP-row pair.
- *
- * Load x, default every result lane to COMP_MODE's wide value (0, or 1 for the gtez/ltez
- * complement — see @ref _zero_comp_default_), predicate the lanes that satisfy COMP_MODE and write
- * the opposite value into them (see @ref zero_comp_fill), then store unconditionally. FMT selects
- * the sfpmem mode, the SFPSETCC interpretation, and the 1/0 encoding. The SFPSTORE uses ADDR_MOD_6
- * (dest.incr=2) so each replay advances the dest counter by one SFP-row pair while the load/store
- * offsets stay constant, letting the recorded instructions re-issue unchanged across iterations.
- *
- * @tparam FMT: SFPU DataFormat (sfpu_math): Int32, Int16, Int8, UInt16, UInt8, or a float format.
- * @tparam COMP_MODE: Comparison-to-zero mode, values =
- *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
- */
-template <DataFormat FMT, SfpuType COMP_MODE>
-inline __attribute__((always_inline)) void _zero_comp_body_() {
-    // Integers take their explicit width from the canonical selector (Int32→INT32, Int16→INT16,
-    // UInt16→UINT16). Floats must use DEFAULT: the comp result is written as an fp16b 1.0 bit
-    // pattern, and the explicit fp16 sfpmem modes (FP16A/FP16B) decode that store back as NaN —
-    // only the implied/DEFAULT format round-trips it correctly.
-    constexpr std::uint32_t sfpmem = _zero_comp_is_int_<FMT>() ? _sfpu_sfpmem_type_<FMT>() : p_sfpu::sfpmem::DEFAULT;
-
-    TTI_SFPLOAD(p_sfpu::LREG0, sfpmem, ADDR_MOD_7, 0 /* done */, 0 /* dest_reg */);  // load x from dest
-    _zero_comp_loadi_bool_<FMT, _zero_comp_default_<COMP_MODE>()>();  // result lanes default to COMP_MODE's wide value
-    TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, sfpi::SFPENCC_MOD1_EI_RI);  // enable CC + result=1: all lanes active
-
-    zero_comp_fill<FMT, COMP_MODE>::apply();
-
-    TTI_SFPENCC(sfpi::SFPENCC_IMM12_NEITHER, sfpi::SFPENCC_MOD1_EI_RI);  // disable CC, all lanes unconditional
-    TTI_SFPSTORE(p_sfpu::LREG1, sfpmem, ADDR_MOD_6, 0 /* done */, 0 /* dest_reg */);  // store result; dest += 2 rows
-}
-
-/**
  * @brief Element-wise comparison-to-zero over a tile, written as 1/0 booleans.
  *
- * Records the per-row-pair body once into replay slots 0..len-1 (NoExec: the record pass does
- * not run the SFPU), then replays it ITERATIONS times. ADDR_MOD_6's dest.incr=2 on the SFPSTORE
- * advances the dest counter per replay, so the loop processes one SFP-row pair per iteration.
+ * Defaults every result lane to 0 and writes 1 into the lanes satisfying COMP_MODE (see
+ * @ref _zero_comp_pred_), in FMT's native encoding (see @ref zero_comp_traits). The body's SFPSTORE
+ * rides @c ADDR_MOD_6 (dest.incr=2, programmed in @ref _init_zero_comp_) to advance the dest
+ * counter, so the loop needs no dst_reg++.
  *
  * @tparam APPROXIMATION_MODE: Unused (no approx path); retained for dispatcher signature symmetry.
- * @tparam FMT: SFPU DataFormat (sfpu_math): Int32, Int16, Int8, UInt16, UInt8, or a float format.
- * @tparam COMP_MODE: Comparison-to-zero mode, values =
- *         <equal_zero/not_equal_zero/less_than_zero/greater_than_zero/greater_than_equal_zero/less_than_equal_zero>
+ * @tparam FMT: SFPU DataFormat (sfpu_math): Int32/Int16/Int8/UInt16/UInt8 use their own traits; any
+ *         IEEE float width (Float32/Float16/Float16_b) maps to the width-agnostic Float32 traits
+ *         (the SFPLOAD/SFPSTORE resolve the actual width from the dest format config). Anything else
+ *         is a compile error.
+ * @tparam COMP_MODE: Comparison-to-zero mode.
  * @tparam ITERATIONS: Number of SFP-row pairs to process (8 for a 32×16 face).
- * @note Requires @ref _init_zero_comp_ to have programmed ADDR_MOD_6 (dest.incr=2).
+ * @note Requires @ref _init_zero_comp_ to have programmed @c vConstIntPrgm0 and @c ADDR_MOD_6.
  */
 template <bool APPROXIMATION_MODE, DataFormat FMT, SfpuType COMP_MODE, int ITERATIONS = SFPU_ITERATIONS>
 inline void _calculate_zero_comp_() {
-    constexpr std::uint32_t replay_len = _zero_comp_replay_len_<COMP_MODE>();
+    constexpr bool is_int_fmt = FMT == DataFormat::Int32 || FMT == DataFormat::Int16 || FMT == DataFormat::Int8 ||
+                                FMT == DataFormat::UInt16 || FMT == DataFormat::UInt8;
+    constexpr bool is_float_fmt =
+        FMT == DataFormat::Float32 || FMT == DataFormat::Float16 || FMT == DataFormat::Float16_b;
+    static_assert(
+        is_int_fmt || is_float_fmt,
+        "_calculate_zero_comp_: unsupported FMT (expected an integer format or an IEEE float width)");
 
-    // Record the per-row-pair body once into replay slots 0..replay_len-1 (NoExec: the
-    // record pass does not run the SFPU); each replay re-issues it while ADDR_MOD_6
-    // advances the dest counter, so the loop processes one SFP-row pair per iteration.
-    lltt::record(0, replay_len);
-    _zero_comp_body_<FMT, COMP_MODE>();
+    // All float widths share the width-agnostic Float32 traits; integer formats use their own.
+    constexpr DataFormat TRAITS_FMT = is_int_fmt ? FMT : DataFormat::Float32;
+    using traits = zero_comp_traits<TRAITS_FMT>;
 
 #pragma GCC unroll 8
     for (int d = 0; d < ITERATIONS; d++) {
-        lltt::replay(0, replay_len);
+        sfpi::vUInt bits = traits::load();
+
+        typename traits::result_t result = traits::zero();
+        v_if(_zero_comp_pred_<COMP_MODE>(bits)) { result = traits::one(); }
+        v_endif;
+
+        traits::store(result);
     }
 }
 

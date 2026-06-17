@@ -53,9 +53,9 @@ using namespace ckernel::sfpu;
 /**
  * @brief Whether OPERATION is one of the six comparison-to-zero modes.
  *
- * The comp family needs a dedicated init (@ref _init_zero_comp_) and a runtime
- * format switch (@ref call_zero_comp_operation_quasar), unlike the float-only
- * unary ops, so the dispatchers special-case it.
+ * The comp family needs a runtime format switch (@ref call_zero_comp_operation_quasar)
+ * to pick the integer-vs-float compare path, unlike the float-only unary ops, so the
+ * dispatcher special-cases it.
  *
  * @param op The SFPU operation type to classify.
  */
@@ -78,20 +78,16 @@ void init_unary_sfpu_operation_quasar()
     {
         _init_gelu_();
     }
-    else if constexpr (is_zero_comp_op(OPERATION))
-    {
-        _init_zero_comp_();
-    }
 }
 
 /**
  * @brief Apply a comparison-to-zero SFPU op in-place on one Dest tile.
  *
  * Unlike the float-only unary ops, comp needs the SFPU math format at runtime to
- * pick the sfpmem load/store mode and the 1/0 result encoding (see
- * `ckernel_sfpu_comp.h`). Integer formats select their explicit width; all float
- * widths share the width-agnostic `Float32` instantiation (SFPLOAD/SFPSTORE
- * DEFAULT resolves the actual width from the HW format config).
+ * pick the integer load/store width and the integer-vs-float compare path (see
+ * `ckernel_sfpu_comp.h`). Int32/Int16/Int8/UInt16/UInt8 select their explicit
+ * sfpmem width; all float widths share the width-agnostic `Float32` instantiation,
+ * whose sfpi compare path resolves the actual width from the HW format config.
  *
  * @tparam OPERATION The comparison-to-zero `SfpuType` (compile-time constant).
  * @tparam ITERATIONS Number of SFPU loop iterations.
