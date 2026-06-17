@@ -48,8 +48,8 @@ from models.experimental.deepseek_v4_flash.tt.weight_loader import (
     resolve_snapshot_dir,
 )
 
+DEFAULT_MODEL_DIR = Path("/home/ttuser/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash")
 
-DEFAULT_MODEL_DIR = Path("/home/ttuser/models/hub/models--deepseek-ai--DeepSeek-V4-Flash")
 # Layers 0..2 are ``hash_moe`` (frozen tid2eid routing); 3+ are standard ``moe``.
 MOE_LAYER = 5
 PCC_THRESHOLD = 0.99

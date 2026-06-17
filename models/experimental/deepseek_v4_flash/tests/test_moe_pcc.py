@@ -34,7 +34,6 @@ import torch
 
 
 # Cached transformers 5.8.1 (the only install with ``deepseek_v4`` / ``gpt_oss``).
-_CACHED_TRANSFORMERS = "/home/ttuser/.cache/uv/archive-v0/U5SPsIWJupLz-bDcPI13a"
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +88,6 @@ def _reference_main() -> None:
     # 0.21.4. The version is only enforced by an import-time check, so spoof it.
     _orig_version = _md.version
     _md.version = lambda name: "0.22.0" if name.lower() == "tokenizers" else _orig_version(name)
-    sys.path.insert(0, _CACHED_TRANSFORMERS)
 
     from transformers.models.deepseek_v4 import modeling_deepseek_v4 as M
     from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
@@ -164,9 +162,7 @@ from models.experimental.deepseek_v4_flash.tt.deepseek_v4_flash import (  # noqa
 # The reference needs the cached transformers 5.8.1, which imports cleanly only
 # under the system interpreter (the ttnn venv's huggingface_hub/transformers are
 # too old). Fall back to whatever is on PATH if the canonical path is missing.
-_SYSTEM_PYTHON = (
-    "/usr/bin/python3" if Path("/usr/bin/python3").exists() else (shutil.which("python3") or sys.executable)
-)
+_SYSTEM_PYTHON = shutil.which("python")
 _THIS_FILE = str(Path(__file__).resolve())
 PCC_THRESHOLD = 0.99
 

@@ -39,7 +39,7 @@ import torch
 
 
 _CACHED_TRANSFORMERS = "/home/ttuser/.cache/uv/archive-v0/U5SPsIWJupLz-bDcPI13a"
-_DEFAULT_MODEL_DIR = "/home/ttuser/models/hub/models--deepseek-ai--DeepSeek-V4-Flash"
+_DEFAULT_MODEL_DIR = "/home/ttuser/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-V4-Flash"
 _N_LAYERS = 3
 _DEFAULT_TEXT = "The quick brown fox jumps over the lazy dog near the riverbank at dawn."
 
@@ -232,9 +232,7 @@ from models.experimental.deepseek_v4_flash.tt.weight_loader import (  # noqa: E4
 )
 
 
-_SYSTEM_PYTHON = (
-    "/usr/bin/python3" if Path("/usr/bin/python3").exists() else (shutil.which("python3") or sys.executable)
-)
+_SYSTEM_PYTHON = shutil.which("python") or sys.executable
 _THIS_FILE = str(Path(__file__).resolve())
 _MASK_NEG = -1.0e9
 PCC_THRESHOLD = 0.97

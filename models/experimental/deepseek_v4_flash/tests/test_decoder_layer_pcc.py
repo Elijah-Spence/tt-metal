@@ -236,9 +236,7 @@ from models.experimental.deepseek_v4_flash.tt.weight_loader import (  # noqa: E4
 )
 
 
-_SYSTEM_PYTHON = (
-    "/usr/bin/python3" if Path("/usr/bin/python3").exists() else (shutil.which("python3") or sys.executable)
-)
+_SYSTEM_PYTHON = shutil.which("python") or sys.executable
 _THIS_FILE = str(Path(__file__).resolve())
 _MASK_NEG = -1.0e9
 PCC_THRESHOLD = 0.98
