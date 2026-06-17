@@ -412,6 +412,8 @@ def test_ttnn_combine(
     run_pcc_check,
     dispatched_buffer_layout,
     use_fp8_output,
+    is_ci_env,
+    is_ci_v2_env,
 ):
     run_combine(
         mesh_device,
@@ -426,4 +428,6 @@ def test_ttnn_combine(
         run_pcc_check,
         dispatched_buffer_layout,
         use_fp8_output,
+        is_ci_env,
+        is_ci_v2_env,
     )

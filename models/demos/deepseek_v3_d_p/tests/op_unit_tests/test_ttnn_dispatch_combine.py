@@ -432,6 +432,8 @@ def test_ttnn_dispatch_combine(
     topology,
     use_predictable_data,
     dispatched_buffer_layout,
+    is_ci_env,
+    is_ci_v2_env,
 ):
     run_dispatch_combine(
         mesh_device,
@@ -444,6 +446,8 @@ def test_ttnn_dispatch_combine(
         topology,
         use_predictable_data,
         dispatched_buffer_layout,
+        is_ci_env=is_ci_env,
+        is_ci_v2_env=is_ci_v2_env,
     )
 
 

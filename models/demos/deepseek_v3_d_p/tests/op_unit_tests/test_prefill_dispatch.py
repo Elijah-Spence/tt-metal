@@ -466,6 +466,8 @@ def test_ttnn_dispatch(
     use_fp8_output,
     verbose,
     run_pcc_check,
+    is_ci_env,
+    is_ci_v2_env,
 ):
     run_dispatch(
         mesh_device,
@@ -481,4 +483,6 @@ def test_ttnn_dispatch(
         use_fp8_output,
         verbose,
         run_pcc_check,
+        is_ci_env,
+        is_ci_v2_env,
     )
