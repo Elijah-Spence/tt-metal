@@ -72,6 +72,7 @@ jobs:
     uses: ./.github/workflows/build-artifact.yaml
     permissions:
       packages: write
+      actions: read
     secrets: inherit
     with:
       build-type: ${{ inputs.build-type || 'Release' }}
@@ -79,6 +80,7 @@ jobs:
       build-wheel: true
       platform: ${{ inputs.platform || 'Ubuntu 22.04' }}
       enable-lto: ${{ inputs.enable-lto || false }}
+      use-artifacts-from-run: 24497382899
   device-perf:
     needs: build-artifact-profiler
     secrets: inherit
