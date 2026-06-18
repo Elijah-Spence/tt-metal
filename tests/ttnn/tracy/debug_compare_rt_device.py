@@ -8,17 +8,18 @@ import os, threading, torch, ttnn
 def main():
     records, lock = [], threading.Lock()
 
-    def collect(r):
+    def collect(batch):
         with lock:
-            records.append(
-                {
-                    "runtime_id": r.runtime_id,
-                    "start": r.start_timestamp,
-                    "end": r.end_timestamp,
-                    "freq": r.frequency,
-                    "chip": r.chip_id,
-                }
-            )
+            for r in batch.records:
+                records.append(
+                    {
+                        "runtime_id": r.runtime_id,
+                        "start": r.start_timestamp,
+                        "end": r.end_timestamp,
+                        "freq": r.frequency,
+                        "chip": r.chip_id,
+                    }
+                )
 
     dev = ttnn.open_mesh_device(
         ttnn.MeshShape(1, 1),

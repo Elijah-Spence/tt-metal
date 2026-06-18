@@ -23,8 +23,15 @@ struct ProgramRealtimeRecord {
                                                        // MetalContext teardown or reinitialization.
 };
 
-// Callback type for real-time profiler data.
-using ProgramRealtimeProfilerCallback = std::function<void(const ProgramRealtimeRecord& record)>;
+struct ProgramRealtimeRecordBatch {
+    std::span<const ProgramRealtimeRecord> records;  // Oldest first; valid only for the duration of the callback.
+    uint64_t dropped;  // Records not delivered since the last call; nonzero if the callback could not keep up
+                       // with incoming profiler data.
+};
+
+// Callback type for real-time profiler data. Invoked with a batch so a callback can
+// amortize fixed costs (a lock, a file flush, a network/DB round-trip, etc.) across many records.
+using ProgramRealtimeProfilerCallback = std::function<void(const ProgramRealtimeRecordBatch& batch)>;
 
 // Opaque handle returned by RegisterProgramRealtimeProfilerCallback, used to unregister.
 using ProgramRealtimeProfilerCallbackHandle = uint64_t;
@@ -32,8 +39,8 @@ using ProgramRealtimeProfilerCallbackHandle = uint64_t;
 // clang-format off
 /**
  * Register a callback to be invoked when real-time profiler data arrives from a device.
- * Multiple callbacks can be registered; they are called in order of registration from the
- * real-time profiler receiver thread.
+ * Multiple callbacks can be registered.
+ * Callbacks that are too slow to keep up with incoming profiler data may miss records.
  *
  * Return value: ProgramRealtimeProfilerCallbackHandle - handle that can be passed to
  *               UnregisterProgramRealtimeProfilerCallback to remove the callback.

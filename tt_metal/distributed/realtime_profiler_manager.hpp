@@ -6,22 +6,28 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <tt-metalium/core_coord.hpp>
 #include <tt-metalium/mesh_coord.hpp>
 
 #include "context/context_types.hpp"
+#include "tt_metal/common/broadcast_ring.hpp"
+#include "tt_metal/impl/dispatch/data_collection.hpp"
 
 namespace tt::tt_metal {
 
 class IDevice;
 class Program;
+class DataCollector;
 class RealtimeProfilerTracyHandler;
 
 namespace distributed {
@@ -38,6 +44,11 @@ struct RealtimeProfilerCoreL1Addrs {
     uint32_t socket_config = 0;
 };
 
+struct RealtimeProfilerStats {
+    uint32_t max_fifo_pages = 0;
+    double mean_publish_batch_records = 0.0;
+};
+
 // Owns the full RT-profiler subsystem for a single MeshDevice: per-device state, the
 // background receiver thread, the host-side Tracy handler, and the host-device sync
 // handshake.
@@ -47,21 +58,19 @@ struct RealtimeProfilerCoreL1Addrs {
 //     kernels on each eligible device, and starts the receiver thread.
 //   * shutdown() (or destruction) signals receiver termination, joins the thread, and
 //     drops the Tracy handler. Idempotent.
-//   * trigger_sync_check() pauses the receiver, runs a sync handshake only on devices
+//   * trigger_sync_check() asks the receiver to run a sync handshake only on devices
 //     whose last finish/init sync was at least 60s ago (each device tracked separately),
 //     or on the first finish-path attempt after init (so short runs still get FINISH_SYNC),
-//     then resumes the receiver. Called from the FD command queue's finish path.
+//     Called from the FD command queue's finish path.
 //     Constructor init uses the same interval process-wide per chip_id to throttle full
 //     run_sync + SYNC_CHECK when reopening meshes on the same chips.
 //
-//     Init host-device sync (run_sync + constructor SYNC_CHECK) and finish-path
-//     trigger_sync_check shard work across devices using a small worker pool (up to
-//     hardware_concurrency). ProgramRealtimeProfilerCallbacks invoked from parallel
-//     finish-path workers are serialized — callbacks run outside DataCollector's mutex.
-class RealtimeProfilerManager {
+//     Init host-device sync (run_sync + constructor SYNC_CHECK) shards work across
+//     devices using a small worker pool (up to hardware_concurrency).
+class RealtimeProfilerManager : private tt::RealtimeProfilerCallbackListener {
 public:
     explicit RealtimeProfilerManager(const std::shared_ptr<MeshDevice>& mesh_device);
-    ~RealtimeProfilerManager();
+    ~RealtimeProfilerManager() override;
 
     RealtimeProfilerManager(const RealtimeProfilerManager&) = delete;
     RealtimeProfilerManager& operator=(const RealtimeProfilerManager&) = delete;
@@ -72,7 +81,7 @@ public:
     // and notifies deactivation. Safe to call multiple times.
     void shutdown();
 
-    // Pauses receiver if at least one device needs a sync, then performs the handshake
+    // Requests the receiver to perform the handshake if at least one device needs a sync
     // only on those devices (others are unchanged). No-op when no devices are active,
     // the Tracy handler has been released, or every device was synced within the last
     // 60 seconds (except the first finish-path sync after init, which always runs).
@@ -80,6 +89,7 @@ public:
 
     // First active device's D2H socket, or nullptr if no device is active.
     D2HSocket* get_socket() const;
+    RealtimeProfilerStats get_receiver_stats() const noexcept;
 
 private:
     struct DeviceState {
@@ -99,7 +109,6 @@ private:
         uint32_t realtime_profiler_base_addr = 0;
         uint32_t sync_request_addr = 0;
         uint32_t sync_host_ts_addr = 0;
-        std::atomic<bool> sync_response_received{true};
         int64_t sync_host_time_before = 0;
         // Updated after a successful finish-path or init SYNC_CHECK handshake; used to
         // throttle redundant finish syncs (minimum 60s between attempts per device).
@@ -108,6 +117,10 @@ private:
         // get a FINISH_SYNC pair even when finish runs within the minimum interval of init.
         // Cleared after the first successful finish-path handshake for this device.
         bool pending_first_unthrottled_finish_sync = false;
+        enum class FinishSyncPhase : uint8_t { Idle, AwaitingDelay, AwaitingResponse };
+        FinishSyncPhase finish_sync_phase = FinishSyncPhase::Idle;
+        std::chrono::steady_clock::time_point finish_sync_request_at;
+        std::chrono::steady_clock::time_point finish_sync_deadline;
 
         DeviceState();
         ~DeviceState();
@@ -117,7 +130,77 @@ private:
         DeviceState& operator=(const DeviceState&) = delete;
     };
 
+    // Set up the D2H socket and launch the BRISC/NCRISC kernels on each eligible local device,
+    // populating devices_. Devices failing the eligibility gate or socket creation are skipped.
+    void initialize_devices(const std::shared_ptr<MeshDevice>& mesh_device);
     void run_sync(DeviceState& dev_state, uint32_t num_samples);
+    // Constructor-time host-device sync: per-device run_sync plus Tracy calibration markers.
+    void run_init_sync();
+
+    using CallbackRecordRing = BroadcastRing<tt::ProgramRealtimeRecord>;
+
+    struct ReceiverStatsAtomics {
+        std::atomic<uint32_t> max_fifo_pages{0};
+        std::atomic<uint64_t> publish_batch_records_sum{0};
+        std::atomic<uint64_t> publish_batches{0};
+    };
+
+    struct ReceiverStatsLocal {
+        uint32_t max_fifo_pages = 0;
+        uint64_t publish_batch_records_sum = 0;
+        uint64_t publish_batches = 0;
+    };
+
+    enum class ConsumerStopMode : uint8_t { Running, StopNow, DrainThenStop };
+
+    struct Consumer {
+        Consumer(CallbackRecordRing::Reader reader, tt::ProgramRealtimeProfilerCallback callback) :
+            reader(std::move(reader)), callback(std::move(callback)) {}
+        CallbackRecordRing::Reader reader;
+        tt::ProgramRealtimeProfilerCallback callback;
+        std::atomic<ConsumerStopMode> stop_mode{ConsumerStopMode::Running};
+        uint64_t dropped = 0;
+        std::thread thread;
+    };
+
+    void run_consumer(Consumer& consumer);
+    void stop_consumer(Consumer& consumer, ConsumerStopMode stop_mode);
+    void on_callback_registered(
+        tt::ProgramRealtimeProfilerCallbackHandle handle, const tt::ProgramRealtimeProfilerCallback& callback) override;
+    void on_callback_unregistered(tt::ProgramRealtimeProfilerCallbackHandle handle) override;
+
+    // Receiver thread entry point: drain every device socket, advance the finish-sync handshake, and
+    // publish decoded records to the ring for consumer threads to read.
+    void run_receiver();
+    void run_receiver_loop(
+        std::vector<uint32_t>& page_buf,
+        std::vector<tt::ProgramRealtimeRecord>& record_buf,
+        const DataCollector& data_collector,
+        uint64_t& pages_received);
+    uint64_t drain_receiver_on_shutdown(
+        std::vector<uint32_t>& page_buf,
+        std::vector<tt::ProgramRealtimeRecord>& record_buf,
+        const DataCollector& data_collector,
+        uint64_t& pages_received);
+    uint32_t drain_device_pages(
+        DeviceState& dev_state,
+        bool scan_sync_marker,
+        std::vector<uint32_t>& page_buf,
+        std::vector<tt::ProgramRealtimeRecord>& record_buf,
+        const DataCollector& data_collector,
+        uint64_t& pages_received);
+    // Decode program records from drained pages and publish them to the broadcast ring.
+    void publish_pages(
+        const DeviceState& dev_state,
+        const uint32_t* page_buf,
+        uint32_t pages,
+        const DataCollector& data_collector,
+        std::vector<tt::ProgramRealtimeRecord>& records);
+    static void write_sync_request(DeviceState& dev_state, uint32_t value);
+    [[nodiscard]] bool has_active_finish_sync() const;
+    void start_finish_syncs(std::chrono::steady_clock::time_point now);
+    void advance_finish_sync(DeviceState& dev_state, std::chrono::steady_clock::time_point now);
+    void service_finish_sync(std::chrono::steady_clock::time_point now, bool allow_start);
 
     // ContextId of the owning MeshDevice, captured in the constructor. All MetalContext
     // accesses inside this manager must go through MetalContext::instance(context_id_)
@@ -128,11 +211,19 @@ private:
     std::vector<DeviceState> devices_;
     std::thread receiver_thread_;
     std::atomic<bool> stop_{false};
-    std::atomic<bool> pause_requested_{false};
-    std::atomic<bool> paused_{false};
+    std::atomic<bool> finish_sync_requested_{false};
+    std::atomic<bool> finish_sync_busy_{false};
+    std::atomic<std::chrono::steady_clock::rep> last_sync_request_at_{0};
     std::unique_ptr<RealtimeProfilerTracyHandler> tracy_handler_;
-    // Finish-path sync may drain profiler pages from parallel workers; serialize callbacks.
-    std::mutex parallel_finish_sync_callback_mu_;
+    ReceiverStatsAtomics receiver_stats_;
+    ReceiverStatsLocal receiver_stats_local_;
+
+    static constexpr size_t kRingCapacityPerDevice = 1u << 15;  // Match the 32K-page D2H FIFO depth per device.
+    static constexpr size_t kMaxRingCapacity = 1u << 20;
+    static constexpr size_t kMaxConsumerBatchRecords = 4096;
+    CallbackRecordRing ring_;
+    std::mutex consumers_mutex_;
+    std::unordered_map<tt::ProgramRealtimeProfilerCallbackHandle, std::unique_ptr<Consumer>> consumers_;
 };
 
 }  // namespace distributed

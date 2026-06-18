@@ -30,9 +30,12 @@
 // device, gracefully skips when RT profiler is disabled).
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -52,12 +55,16 @@
 #include <tt-metalium/program.hpp>
 #include <tt-metalium/experimental/realtime_profiler.hpp>
 
+#include "tt_metal/distributed/realtime_profiler_manager.hpp"
+#include "tt_metal/distributed/mesh_device_impl.hpp"
+
 namespace tt::tt_metal {
 namespace {
 
 using tt::tt_metal::experimental::IsProgramRealtimeProfilerActive;
 using tt::tt_metal::experimental::ProgramRealtimeProfilerCallbackHandle;
 using tt::tt_metal::experimental::ProgramRealtimeRecord;
+using tt::tt_metal::experimental::ProgramRealtimeRecordBatch;
 using tt::tt_metal::experimental::RegisterProgramRealtimeProfilerCallback;
 using tt::tt_metal::experimental::UnregisterProgramRealtimeProfilerCallback;
 
@@ -173,9 +180,9 @@ TEST(RealtimeProfilerStress, RingBufferOverflowFromTrace) {
     records.reserve(kNumProgramsInTrace);
 
     ProgramRealtimeProfilerCallbackHandle handle =
-        RegisterProgramRealtimeProfilerCallback([&records_mu, &records](const ProgramRealtimeRecord& record) {
+        RegisterProgramRealtimeProfilerCallback([&records_mu, &records](const ProgramRealtimeRecordBatch& batch) {
             std::lock_guard<std::mutex> lk(records_mu);
-            records.push_back(record);
+            records.insert(records.end(), batch.records.begin(), batch.records.end());
         });
 
     distributed::MeshWorkload workload = build_blank_kernel_workload(mesh_device);
@@ -305,6 +312,102 @@ TEST(RealtimeProfilerStress, RingBufferOverflowFromTrace) {
                                         << " stress record(s) reported duration >= " << kMaxStressDurationNs
                                         << " ns (clock corruption / mis-decoded timestamp)";
 
+    EXPECT_TRUE(mesh_device->close());
+}
+
+// Sustained-throughput RT profiler stress, opt-in via TT_RT_PROFILER_STRESS_SECONDS.
+// Opens the full mesh and replays a blank-kernel trace for the requested duration.
+//
+//   TT_RT_PROFILER_STRESS_SECONDS=600 ./<binary> --gtest_filter='*HostFifoPressureSustained'
+//   TT_RT_PROFILER_STRESS_PRINT_SEC=5  (optional; default 2s between prints)
+TEST(RealtimeProfilerStress, HostFifoPressureSustained) {
+    const char* secs_env = std::getenv("TT_RT_PROFILER_STRESS_SECONDS");
+    if (secs_env == nullptr) {
+        GTEST_SKIP() << "Set TT_RT_PROFILER_STRESS_SECONDS=<n> to run the sustained host-FIFO pressure stress";
+    }
+    const double run_seconds = std::atof(secs_env);
+    if (run_seconds <= 0.0) {
+        GTEST_SKIP() << "TT_RT_PROFILER_STRESS_SECONDS must be positive";
+    }
+    const char* print_env = std::getenv("TT_RT_PROFILER_STRESS_PRINT_SEC");
+    const double print_seconds = (print_env != nullptr) ? std::max(0.1, std::atof(print_env)) : 2.0;
+
+    auto mesh_device = distributed::MeshDevice::create(
+        distributed::MeshDeviceConfig(std::nullopt),
+        DEFAULT_L1_SMALL_SIZE,
+        kTraceRegionSize,
+        1,
+        DispatchCoreConfig{DispatchCoreType::WORKER});
+    ASSERT_NE(mesh_device, nullptr);
+
+    if (!IsProgramRealtimeProfilerActive()) {
+        mesh_device->close();
+        GTEST_SKIP() << "Real-time profiler is not active on this dispatch config";
+    }
+
+    std::atomic<uint64_t> record_count{0};
+    ProgramRealtimeProfilerCallbackHandle handle =
+        RegisterProgramRealtimeProfilerCallback([&record_count](const ProgramRealtimeRecordBatch& batch) {
+            record_count.fetch_add(batch.records.size(), std::memory_order_relaxed);
+        });
+
+    distributed::MeshWorkload workload = build_blank_kernel_workload(mesh_device);
+    auto& cq = mesh_device->mesh_command_queue(0);
+    distributed::EnqueueMeshWorkload(cq, workload, true);  // compile + warm up
+
+    distributed::MeshTraceId trace_id = distributed::BeginTraceCapture(mesh_device.get(), cq.id());
+    for (uint32_t i = 0; i < kNumProgramsInTrace; ++i) {
+        distributed::EnqueueMeshWorkload(cq, workload, false);
+    }
+    mesh_device->end_mesh_trace(cq.id(), trace_id);
+
+    std::atomic<bool> stop{false};
+    std::thread monitor([&stop, &record_count, &mesh_device, print_seconds]() {
+        const auto t0 = std::chrono::steady_clock::now();
+        uint64_t last_records = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::duration<double>(print_seconds));
+            const uint64_t total = record_count.load(std::memory_order_relaxed);
+            const uint64_t delta = total - last_records;
+            last_records = total;
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            const auto stats = mesh_device->impl().get_realtime_profiler_stats();
+            log_info(
+                tt::LogTest,
+                "[RT stress t={:6.1f}s] records +{} ({:.0f}/s) total={} | stats: max_fifo={} pages, "
+                "mean_publish_batch={:.1f} records",
+                elapsed,
+                delta,
+                static_cast<double>(delta) / print_seconds,
+                total,
+                stats.max_fifo_pages,
+                stats.mean_publish_batch_records);
+        }
+    });
+
+    const auto t_start = std::chrono::steady_clock::now();
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count() < run_seconds) {
+        mesh_device->replay_mesh_trace(cq.id(), trace_id, true);
+    }
+
+    mesh_device->quiesce_devices();
+    std::this_thread::sleep_for(kPostQuiesceDrain);
+    stop.store(true, std::memory_order_relaxed);
+    monitor.join();
+
+    const auto final_stats = mesh_device->impl().get_realtime_profiler_stats();
+    log_info(
+        tt::LogTest,
+        "[RT stress FINAL] total_records={} stats: max_fifo={} pages, mean_publish_batch={:.1f} records",
+        record_count.load(std::memory_order_relaxed),
+        final_stats.max_fifo_pages,
+        final_stats.mean_publish_batch_records);
+
+    UnregisterProgramRealtimeProfilerCallback(handle);
+    mesh_device->release_mesh_trace(trace_id);
+
+    EXPECT_GT(record_count.load(std::memory_order_relaxed), 0u)
+        << "No RT profiler records received during the stress run";
     EXPECT_TRUE(mesh_device->close());
 }
 

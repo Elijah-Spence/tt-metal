@@ -75,7 +75,11 @@ def main():
     if os.environ.get("REQUIRE_GALAXY") == "1":
         try:
             cluster_type = ttnn.cluster.get_cluster_type()
-            is_galaxy = cluster_type in (ttnn.cluster.ClusterType.GALAXY, ttnn.cluster.ClusterType.TG)
+            is_galaxy = cluster_type in (
+                ttnn.cluster.ClusterType.GALAXY,
+                ttnn.cluster.ClusterType.TG,
+                ttnn.cluster.ClusterType.BLACKHOLE_GALAXY,
+            )
         except Exception:
             is_galaxy = False
         if not is_galaxy:
@@ -109,17 +113,18 @@ def main():
     rt_records = []
     lock = threading.Lock()
 
-    def collect(record):
+    def collect(batch):
         with lock:
-            rt_records.append(
-                {
-                    "runtime_id": record.runtime_id,
-                    "chip_id": record.chip_id,
-                    "start_timestamp": record.start_timestamp,
-                    "end_timestamp": record.end_timestamp,
-                    "frequency_ghz": record.frequency,
-                }
-            )
+            for record in batch.records:
+                rt_records.append(
+                    {
+                        "runtime_id": record.runtime_id,
+                        "chip_id": record.chip_id,
+                        "start_timestamp": record.start_timestamp,
+                        "end_timestamp": record.end_timestamp,
+                        "frequency_ghz": record.frequency,
+                    }
+                )
 
     handle = ttnn.device.RegisterProgramRealtimeProfilerCallback(collect)
 

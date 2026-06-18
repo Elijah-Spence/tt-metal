@@ -74,6 +74,7 @@ class MeshCommandQueueBase;
 class MeshDevice;
 class RealtimeProfilerManager;
 class TensorPrefetcherManager;
+struct RealtimeProfilerStats;
 
 namespace multihost {
 class DistributedContext;
@@ -305,6 +306,7 @@ public:
     void init_realtime_profiler_socket(const std::shared_ptr<MeshDevice>& mesh_device);
     void trigger_realtime_profiler_sync_check();
     D2HSocket* get_realtime_profiler_socket() const;
+    RealtimeProfilerStats get_realtime_profiler_stats() const;
 
     // DRISC L1 arena. Consumed by the DRAM-sender GlobalCircularBuffer ctor for
     // pages_sent allocations. Constructed eagerly in initialize_impl() when the

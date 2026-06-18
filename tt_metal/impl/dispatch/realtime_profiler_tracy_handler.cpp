@@ -71,8 +71,11 @@ std::string FormatTopCounts(const std::unordered_map<Key, uint64_t>& counts) {
 }  // namespace
 
 RealtimeProfilerTracyHandler::RealtimeProfilerTracyHandler() {
-    callback_handle_ = tt::RegisterProgramRealtimeProfilerCallback(
-        [this](const tt::ProgramRealtimeRecord& record) { HandleRecord(record); });
+    callback_handle_ = tt::RegisterProgramRealtimeProfilerCallback([this](const tt::ProgramRealtimeRecordBatch& batch) {
+        for (const auto& record : batch.records) {
+            HandleRecord(record);
+        }
+    });
 }
 
 RealtimeProfilerTracyHandler::~RealtimeProfilerTracyHandler() {

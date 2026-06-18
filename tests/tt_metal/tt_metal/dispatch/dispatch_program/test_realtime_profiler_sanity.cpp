@@ -47,6 +47,7 @@ namespace {
 using tt::tt_metal::experimental::IsProgramRealtimeProfilerActive;
 using tt::tt_metal::experimental::ProgramRealtimeProfilerCallbackHandle;
 using tt::tt_metal::experimental::ProgramRealtimeRecord;
+using tt::tt_metal::experimental::ProgramRealtimeRecordBatch;
 using tt::tt_metal::experimental::RegisterProgramRealtimeProfilerCallback;
 using tt::tt_metal::experimental::UnregisterProgramRealtimeProfilerCallback;
 
@@ -141,9 +142,9 @@ TEST(RealtimeProfilerSanity, FiveProgramsBackToBack) {
     std::vector<ProgramRealtimeRecord> records;
 
     ProgramRealtimeProfilerCallbackHandle handle =
-        RegisterProgramRealtimeProfilerCallback([&records_mu, &records](const ProgramRealtimeRecord& record) {
+        RegisterProgramRealtimeProfilerCallback([&records_mu, &records](const ProgramRealtimeRecordBatch& batch) {
             std::lock_guard<std::mutex> lk(records_mu);
-            records.push_back(record);
+            records.insert(records.end(), batch.records.begin(), batch.records.end());
         });
 
     CoreCoord compute_grid = mesh_device->compute_with_storage_grid_size();
@@ -231,9 +232,9 @@ TEST(RealtimeProfilerSanity, TraceReplayResolvesKernelSources) {
     std::mutex records_mu;
     std::vector<ProgramRealtimeRecord> records;
     ProgramRealtimeProfilerCallbackHandle handle =
-        RegisterProgramRealtimeProfilerCallback([&records_mu, &records](const ProgramRealtimeRecord& record) {
+        RegisterProgramRealtimeProfilerCallback([&records_mu, &records](const ProgramRealtimeRecordBatch& batch) {
             std::lock_guard<std::mutex> lk(records_mu);
-            records.push_back(record);
+            records.insert(records.end(), batch.records.begin(), batch.records.end());
         });
 
     CoreCoord compute_grid = mesh_device->compute_with_storage_grid_size();

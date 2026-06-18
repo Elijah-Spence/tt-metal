@@ -77,18 +77,19 @@ def main():
     records = []
     lock = threading.Lock()
 
-    def collect(record):
+    def collect(batch):
         with lock:
-            records.append(
-                {
-                    "runtime_id": record.runtime_id,
-                    "chip_id": record.chip_id,
-                    "start_timestamp": record.start_timestamp,
-                    "end_timestamp": record.end_timestamp,
-                    "frequency_ghz": record.frequency,
-                    "kernel_sources": list(record.kernel_sources),
-                }
-            )
+            for record in batch.records:
+                records.append(
+                    {
+                        "runtime_id": record.runtime_id,
+                        "chip_id": record.chip_id,
+                        "start_timestamp": record.start_timestamp,
+                        "end_timestamp": record.end_timestamp,
+                        "frequency_ghz": record.frequency,
+                        "kernel_sources": list(record.kernel_sources),
+                    }
+                )
 
     handle = ttnn.device.RegisterProgramRealtimeProfilerCallback(collect)
 

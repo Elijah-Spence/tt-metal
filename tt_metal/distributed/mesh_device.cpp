@@ -1475,6 +1475,10 @@ D2HSocket* MeshDeviceImpl::get_realtime_profiler_socket() const {
     return realtime_profiler_ ? realtime_profiler_->get_socket() : nullptr;
 }
 
+RealtimeProfilerStats MeshDeviceImpl::get_realtime_profiler_stats() const {
+    return realtime_profiler_ ? realtime_profiler_->get_receiver_stats() : RealtimeProfilerStats{};
+}
+
 ::tt::tt_metal::DriscL1Arena& MeshDeviceImpl::drisc_l1_arena() {
     TT_FATAL(
         drisc_l1_arena_ != nullptr,
