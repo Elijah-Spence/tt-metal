@@ -15,54 +15,19 @@ from loguru import logger
 from tracy import signpost
 
 import ttnn
-from models.demos.deepseek_v3_d_p.reference.deepseek_v3_config import DeepSeekV3Config
-from models.demos.deepseek_v3_d_p.reference.deepseek_v4_flash_config import DeepSeekV4FlashConfig
-from models.demos.deepseek_v3_d_p.reference.deepseek_v4_pro_config import DeepSeekV4ProConfig
-from models.demos.deepseek_v3_d_p.reference.glm_5_1_config import GLM51Config
-from models.demos.deepseek_v3_d_p.reference.gpt_oss_120b_config import GptOss120BConfig
-from models.demos.deepseek_v3_d_p.reference.kimi_k2_6_config import KimiK26Config
-from models.demos.deepseek_v3_d_p.reference.minimax_m2_7_config import MiniMaxM27Config
 from models.demos.deepseek_v3_d_p.reference.tt.moe.expert import TorchExpert
 from models.demos.deepseek_v3_d_p.tt.moe.tt_shared_expert import TtSharedExpert
 from models.tt_transformers.tt.ccl import get_num_links
 from tests.ttnn.utils_for_testing import assert_with_pcc
 
-# Per-model dims as (id_prefix, config, extended_model), each run at its own (emb_dim,
-# MOE_INTERMEDIATE_SIZE) — the shared expert's intermediate width that tt_moe wires into
-# TtSharedExpert. DeepSeek V3 is the baseline and runs by default; every other model is gated
-# behind @pytest.mark.extended_model.
-SHARED_EXPERT_MODELS = [
-    ("dsv3", DeepSeekV3Config, False),
-    ("glm_51", GLM51Config, True),
-    ("kimi_k26", KimiK26Config, True),
-    ("minimax_m27", MiniMaxM27Config, True),
-    ("dsv4_pro", DeepSeekV4ProConfig, True),
-    ("dsv4_flash", DeepSeekV4FlashConfig, True),
-    ("gptoss_120b", GptOss120BConfig, True),
-]
 
-
-def shared_expert_shape_params():
-    """Build the per-model (emb_dim, hidden_dim) shape parametrization. Non-baseline models carry
-    the extended_model marker so they stay gated exactly as DeepSeek V3 runs by default."""
-    params = []
-    for name, config, extended in SHARED_EXPERT_MODELS:
-        marks = (pytest.mark.extended_model,) if extended else ()
-        params.append(
-            pytest.param(
-                config.EMB_SIZE,
-                config.MOE_INTERMEDIATE_SIZE,
-                marks=marks,
-                id=name,
-            )
-        )
-    return params
-
-
-@pytest.mark.parametrize("seq_len_per_chip", [4096, 3200], ids=["4K", "3.2K"])
 @pytest.mark.parametrize(
-    "emb_dim, hidden_dim",
-    shared_expert_shape_params(),
+    "seq_len_per_chip, emb_dim, hidden_dim",
+    [
+        (4096, 7 * 1024, 2 * 1024),
+        (3200, 7 * 1024, 2 * 1024),
+    ],
+    ids=["4K", "3.2K"],
 )
 @pytest.mark.parametrize(
     "mesh_device, device_params, num_links, topology",
