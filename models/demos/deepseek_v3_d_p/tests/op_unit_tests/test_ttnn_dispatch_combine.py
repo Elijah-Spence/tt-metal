@@ -376,13 +376,13 @@ def run_dispatch_combine(
 # DeepSeek V3 is the baseline and runs by default; every other model is gated behind
 # @pytest.mark.extended_model.
 DISPATCH_COMBINE_MODELS = [
-    ("ds", DeepSeekV3Config, False),
-    ("glm", GLM51Config, True),
-    ("kimi", KimiK26Config, True),
-    ("minimax", MiniMaxM27Config, True),
-    ("v4_pro", DeepSeekV4ProConfig, True),
-    ("v4_flash", DeepSeekV4FlashConfig, True),
-    ("gpt_oss", GptOss120BConfig, True),
+    ("dsv3", DeepSeekV3Config, False),
+    ("glm_51", GLM51Config, True),
+    ("kimi_k26", KimiK26Config, True),
+    ("minimax_m27", MiniMaxM27Config, True),
+    ("dsv4_pro", DeepSeekV4ProConfig, True),
+    ("dsv4_flash", DeepSeekV4FlashConfig, True),
+    ("gptoss_120b", GptOss120BConfig, True),
 ]
 
 
@@ -392,9 +392,9 @@ def dispatch_combine_shape_params():
     params = []
     for name, config, extended in DISPATCH_COMBINE_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gpt_oss":
+        if name == "gptoss_120b":
             # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gpt_oss_model,)
+            marks = marks + (pytest.mark.gptoss_120b_model,)
         params.append(
             pytest.param(
                 3200,

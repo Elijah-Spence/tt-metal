@@ -486,13 +486,13 @@ def test_ttnn_routed_expert(
 # num_routed_experts = NUM_ROUTED_EXPERTS // 4, topk 2, capacity 3. DeepSeek V3 is the baseline
 # and runs by default; every other model is gated behind @pytest.mark.extended_model.
 ROUTED_EXPERT_MODELS = [
-    ("ds", DeepSeekV3Config, False),
-    ("glm", GLM51Config, True),
-    ("kimi", KimiK26Config, True),
-    ("minimax", MiniMaxM27Config, True),
-    ("v4_pro", DeepSeekV4ProConfig, True),
-    ("v4_flash", DeepSeekV4FlashConfig, True),
-    ("gpt_oss", GptOss120BConfig, True),
+    ("dsv3", DeepSeekV3Config, False),
+    ("glm_51", GLM51Config, True),
+    ("kimi_k26", KimiK26Config, True),
+    ("minimax_m27", MiniMaxM27Config, True),
+    ("dsv4_pro", DeepSeekV4ProConfig, True),
+    ("dsv4_flash", DeepSeekV4FlashConfig, True),
+    ("gptoss_120b", GptOss120BConfig, True),
 ]
 
 
@@ -502,9 +502,9 @@ def routed_expert_shape_params():
     params = []
     for name, config, extended in ROUTED_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gpt_oss":
+        if name == "gptoss_120b":
             # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gpt_oss_model,)
+            marks = marks + (pytest.mark.gptoss_120b_model,)
         params.append(
             pytest.param(
                 3200,

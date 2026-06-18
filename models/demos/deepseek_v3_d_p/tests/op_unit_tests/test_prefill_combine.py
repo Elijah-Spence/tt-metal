@@ -71,10 +71,6 @@ def run_combine(
     if num_devices >= 8 and not run_pcc_check and use_predictable_data:
         pytest.skip("8-chip perf only runs with random data")
 
-    # ROW_MAJOR combine is exercised for correctness (PCC) only; perf tracks the TILE path.
-    if dispatched_buffer_layout == ttnn.ROW_MAJOR_LAYOUT and not run_pcc_check:
-        pytest.skip("ROW_MAJOR combine only runs in the PCC test, not perf")
-
     # Predictable inputs are torch.arange(...), which produces values up to ~1.8M and
     # overflows fp8_e4m3fn's ±448 range — overflow encodes as NaN, breaking PCC.
     # Only exercise the fp8 path with random (N(0,1)) data that fits in range.
@@ -96,7 +92,8 @@ def run_combine(
     if use_fp8_output and mesh_device.arch() != ttnn.Arch.BLACKHOLE:
         pytest.skip("fp8 combine output requires Blackhole hardware")
 
-    # ROW_MAJOR perf coverage is redundant in CI; TILE (all paths) and ROW_MAJOR PCC still run.
+    # ROW_MAJOR perf coverage is redundant in CI (TILE covers all paths, ROW_MAJOR PCC still
+    # runs), so skip it in CI only — it still runs locally for debugging.
     if (is_ci_env or is_ci_v2_env) and not run_pcc_check and dispatched_buffer_layout == ttnn.ROW_MAJOR_LAYOUT:
         pytest.skip("ROW_MAJOR perf coverage does not run in CI")
 
@@ -347,13 +344,13 @@ def run_combine(
 # @pytest.mark.extended_model. dispatch_buffer_capacity_factor is ceil(N/2) of the most
 # conservative integer N such that dgs*seq*N >= worst-case dispatch buffer.
 COMBINE_MODELS = [
-    ("ds", DeepSeekV3Config, False),
-    ("glm", GLM51Config, True),
-    ("kimi", KimiK26Config, True),
-    ("minimax", MiniMaxM27Config, True),
-    ("v4_pro", DeepSeekV4ProConfig, True),
-    ("v4_flash", DeepSeekV4FlashConfig, True),
-    ("gpt_oss", GptOss120BConfig, True),
+    ("dsv3", DeepSeekV3Config, False),
+    ("glm_51", GLM51Config, True),
+    ("kimi_k26", KimiK26Config, True),
+    ("minimax_m27", MiniMaxM27Config, True),
+    ("dsv4_pro", DeepSeekV4ProConfig, True),
+    ("dsv4_flash", DeepSeekV4FlashConfig, True),
+    ("gptoss_120b", GptOss120BConfig, True),
 ]
 
 
@@ -363,9 +360,9 @@ def combine_shape_params():
     params = []
     for name, config, extended in COMBINE_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gpt_oss":
+        if name == "gptoss_120b":
             # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gpt_oss_model,)
+            marks = marks + (pytest.mark.gptoss_120b_model,)
         shapes = [
             ("pcc", 128, config.NUM_ROUTED_EXPERTS // 16, 4, 4, True),
             ("perf_no_pcc", 3200, config.NUM_ROUTED_EXPERTS // 4, 2, 8, False),

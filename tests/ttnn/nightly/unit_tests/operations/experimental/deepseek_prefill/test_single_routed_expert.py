@@ -159,13 +159,13 @@ def run_single_routed_expert(
 # MOE_INTERMEDIATE_SIZE). DeepSeek V3 is the baseline and runs by default; every other model is
 # gated behind @pytest.mark.extended_model.
 SINGLE_EXPERT_MODELS = [
-    ("ds-v3", DeepSeekV3Config, False),
-    ("minimax", MiniMaxM27Config, True),
-    ("glm", GLM51Config, True),
-    ("v4_pro", DeepSeekV4ProConfig, True),
-    ("v4_flash", DeepSeekV4FlashConfig, True),
-    ("gpt_oss", GptOss120BConfig, True),
-    ("kimi", KimiK26Config, True),
+    ("dsv3", DeepSeekV3Config, False),
+    ("minimax_m27", MiniMaxM27Config, True),
+    ("glm_51", GLM51Config, True),
+    ("dsv4_pro", DeepSeekV4ProConfig, True),
+    ("dsv4_flash", DeepSeekV4FlashConfig, True),
+    ("gptoss_120b", GptOss120BConfig, True),
+    ("kimi_k26", KimiK26Config, True),
 ]
 
 
@@ -175,9 +175,9 @@ def single_routed_expert_token_sweep_params():
     params = []
     for name, config, extended in SINGLE_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gpt_oss":
+        if name == "gptoss_120b":
             # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gpt_oss_model,)
+            marks = marks + (pytest.mark.gptoss_120b_model,)
         for num_tokens, tag in _TOKEN_SWEEP:
             params.append(
                 pytest.param(num_tokens, config.EMB_SIZE, config.MOE_INTERMEDIATE_SIZE, marks=marks, id=f"{name}-{tag}")
@@ -303,9 +303,9 @@ def single_routed_expert_faked_params():
     params = []
     for name, config, extended in SINGLE_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gpt_oss":
+        if name == "gptoss_120b":
             # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gpt_oss_model,)
+            marks = marks + (pytest.mark.gptoss_120b_model,)
         for alloc, active, tag in _FAKED_SWEEP:
             params.append(
                 pytest.param(

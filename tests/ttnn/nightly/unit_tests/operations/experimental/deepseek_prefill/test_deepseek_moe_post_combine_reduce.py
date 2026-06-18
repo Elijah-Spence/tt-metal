@@ -36,16 +36,16 @@ NUM_ROUTED_EXPERTS = DeepSeekV3Config.NUM_ROUTED_EXPERTS
 # emb_dim is parametrized per model: DeepSeek V3 = 7168, GLM 5.1 = 6144, MiniMax M2.7 = 3072,
 # DeepSeek V4 Pro = 7168, DeepSeek V4 Flash = 4096, GPT-OSS 120B = 2880.
 EMB_DIM_PARAMS = [
-    pytest.param(DeepSeekV3Config.EMB_SIZE, id="ds"),
-    pytest.param(GLM51Config.EMB_SIZE, id="glm", marks=pytest.mark.extended_model),
-    pytest.param(MiniMaxM27Config.EMB_SIZE, id="minimax", marks=pytest.mark.extended_model),
-    pytest.param(DeepSeekV4ProConfig.EMB_SIZE, id="v4_pro", marks=pytest.mark.extended_model),
-    pytest.param(DeepSeekV4FlashConfig.EMB_SIZE, id="v4_flash", marks=pytest.mark.extended_model),
+    pytest.param(DeepSeekV3Config.EMB_SIZE, id="dsv3"),
+    pytest.param(GLM51Config.EMB_SIZE, id="glm_51", marks=pytest.mark.extended_model),
+    pytest.param(MiniMaxM27Config.EMB_SIZE, id="minimax_m27", marks=pytest.mark.extended_model),
+    pytest.param(DeepSeekV4ProConfig.EMB_SIZE, id="dsv4_pro", marks=pytest.mark.extended_model),
+    pytest.param(DeepSeekV4FlashConfig.EMB_SIZE, id="dsv4_flash", marks=pytest.mark.extended_model),
     pytest.param(
         GptOss120BConfig.EMB_SIZE,
-        id="gpt_oss",
-        # gpt-oss runs on Wormhole only; gpt_oss_model marker gates it off Blackhole in CI.
-        marks=(pytest.mark.extended_model, pytest.mark.gpt_oss_model),
+        id="gptoss_120b",
+        # gpt-oss runs on Wormhole only; gptoss_120b_model marker gates it off Blackhole in CI.
+        marks=(pytest.mark.extended_model, pytest.mark.gptoss_120b_model),
     ),
 ]
 
@@ -233,7 +233,7 @@ def test_sparse_weights(device, k_active, emb_dim):
     "num_routed_experts",
     [
         pytest.param(DeepSeekV3Config.NUM_ROUTED_EXPERTS, id="routed-256"),
-        pytest.param(KimiK26Config.NUM_ROUTED_EXPERTS, id="kimi-routed-384", marks=pytest.mark.extended_model),
+        pytest.param(KimiK26Config.NUM_ROUTED_EXPERTS, id="kimi_k26-routed-384", marks=pytest.mark.extended_model),
     ],
 )
 @pytest.mark.parametrize("emb_dim", EMB_DIM_PARAMS)
