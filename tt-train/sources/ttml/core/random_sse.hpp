@@ -346,38 +346,6 @@ void generate_uniform_simd(std::span<float> output, uint32_t seed, auto dist_fac
     fill_remainder_simd(output, num_batches * simd_float_batch_size, seed, dist_factory);
 }
 
-// Parallel SIMD generation for uniform_real_distribution<float>
-template <typename DistFactory>
-void generate_uniform_simd_parallel(
-    std::span<float> output, DistFactory dist_factory, uint32_t seed, size_t num_threads) {
-    if (output.size() < parallel_min_size) [[unlikely]] {
-        generate_uniform_simd(output, seed, dist_factory);
-        return;
-    }
-
-    static constexpr size_t CHUNK_SIZE = 512 * 512;
-    const size_t num_chunks = calculate_num_chunks(output.size(), CHUNK_SIZE);
-    const size_t actual_threads = std::min(num_threads, num_chunks);
-    const size_t chunks_per_thread = num_chunks / actual_threads;
-    const size_t leftover = num_chunks % actual_threads;
-
-    std::vector<std::jthread> threads;
-    threads.reserve(actual_threads);
-
-    size_t start_chunk = 0;
-    for (size_t t = 0; t < actual_threads; ++t) {
-        const size_t end_chunk = start_chunk + chunks_per_thread + (t < leftover ? 1 : 0);
-        threads.emplace_back([output, start_chunk, end_chunk, seed, dist_factory]() {
-            for (size_t chunk = start_chunk; chunk < end_chunk; ++chunk) {
-                const size_t offset = chunk * CHUNK_SIZE;
-                const size_t size = std::min(CHUNK_SIZE, output.size() - offset);
-                generate_uniform_simd(output.subspan(offset, size), seed + static_cast<uint32_t>(chunk), dist_factory);
-            }
-        });
-        start_chunk = end_chunk;
-    }
-}
-
 // ============================================================================
 // Portable SIMD Generation (Float - Normal via Box-Muller)
 // ============================================================================
@@ -447,38 +415,6 @@ void generate_normal_simd(std::span<float> output, uint32_t seed, auto dist_fact
     fill_remainder_simd(output, i, seed, dist_factory);
 }
 
-// Parallel SIMD generation for normal_distribution<float>
-template <typename DistFactory>
-void generate_normal_simd_parallel(
-    std::span<float> output, DistFactory dist_factory, uint32_t seed, size_t num_threads) {
-    if (output.size() < parallel_min_size) [[unlikely]] {
-        generate_normal_simd(output, seed, dist_factory);
-        return;
-    }
-
-    static constexpr size_t CHUNK_SIZE = 512 * 512;
-    const size_t num_chunks = calculate_num_chunks(output.size(), CHUNK_SIZE);
-    const size_t actual_threads = std::min(num_threads, num_chunks);
-    const size_t chunks_per_thread = num_chunks / actual_threads;
-    const size_t leftover = num_chunks % actual_threads;
-
-    std::vector<std::jthread> threads;
-    threads.reserve(actual_threads);
-
-    size_t start_chunk = 0;
-    for (size_t t = 0; t < actual_threads; ++t) {
-        const size_t end_chunk = start_chunk + chunks_per_thread + (t < leftover ? 1 : 0);
-        threads.emplace_back([output, start_chunk, end_chunk, seed, dist_factory]() {
-            for (size_t chunk = start_chunk; chunk < end_chunk; ++chunk) {
-                const size_t offset = chunk * CHUNK_SIZE;
-                const size_t size = std::min(CHUNK_SIZE, output.size() - offset);
-                generate_normal_simd(output.subspan(offset, size), seed + static_cast<uint32_t>(chunk), dist_factory);
-            }
-        });
-        start_chunk = end_chunk;
-    }
-}
-
 // ============================================================================
 // Portable SIMD Generation (bfloat16 - Uniform with Pure SIMD)
 // ============================================================================
@@ -521,37 +457,6 @@ void generate_uniform_simd_bfloat16(std::span<bfloat16> output, uint32_t seed, a
     fill_remainder_simd(output, num_batches * simd_bf16_batch_size, seed, dist_factory);
 }
 
-void generate_uniform_simd_parallel_bfloat16(
-    std::span<bfloat16> output, uint32_t seed, auto dist_factory, size_t num_threads) {
-    if (output.size() < parallel_min_size) [[unlikely]] {
-        generate_uniform_simd_bfloat16(output, seed, dist_factory);
-        return;
-    }
-
-    static constexpr size_t CHUNK_SIZE = 512 * 512;
-    const size_t num_chunks = calculate_num_chunks(output.size(), CHUNK_SIZE);
-    const size_t actual_threads = std::min(num_threads, num_chunks);
-    const size_t chunks_per_thread = num_chunks / actual_threads;
-    const size_t leftover = num_chunks % actual_threads;
-
-    std::vector<std::jthread> threads;
-    threads.reserve(actual_threads);
-
-    size_t start_chunk = 0;
-    for (size_t t = 0; t < actual_threads; ++t) {
-        const size_t end_chunk = start_chunk + chunks_per_thread + (t < leftover ? 1 : 0);
-        threads.emplace_back([output, start_chunk, end_chunk, seed, dist_factory]() {
-            for (size_t chunk = start_chunk; chunk < end_chunk; ++chunk) {
-                const size_t offset = chunk * CHUNK_SIZE;
-                const size_t size = std::min(CHUNK_SIZE, output.size() - offset);
-                generate_uniform_simd_bfloat16(
-                    output.subspan(offset, size), seed + static_cast<uint32_t>(chunk), dist_factory);
-            }
-        });
-        start_chunk = end_chunk;
-    }
-}
-
 // ============================================================================
 // Drop-in Replacement API
 // ============================================================================
@@ -584,6 +489,38 @@ inline void sequential_generate(std::span<T> seq, DistGenFunc dist_factory, uint
     }
 }
 
+// Parallel chunk dispatcher: calls chunk_fn(subspan, chunk_seed) per chunk across threads.
+// ChunkFn must be callable as chunk_fn(std::span<T>, uint32_t).
+template <typename T, typename ChunkFn>
+void generate_parallel_chunks(std::span<T> output, uint32_t seed, size_t num_threads, ChunkFn chunk_fn) {
+    if (output.size() < parallel_min_size) [[unlikely]] {
+        chunk_fn(output, seed);
+        return;
+    }
+
+    static constexpr size_t CHUNK_SIZE = 512 * 512;
+    const size_t num_chunks = calculate_num_chunks(output.size(), CHUNK_SIZE);
+    const size_t actual_threads = std::min(num_threads, num_chunks);
+    const size_t chunks_per_thread = num_chunks / actual_threads;
+    const size_t leftover = num_chunks % actual_threads;
+
+    std::vector<std::jthread> threads;
+    threads.reserve(actual_threads);
+
+    size_t start_chunk = 0;
+    for (size_t t = 0; t < actual_threads; ++t) {
+        const size_t end_chunk = start_chunk + chunks_per_thread + (t < leftover ? 1 : 0);
+        threads.emplace_back([output, start_chunk, end_chunk, seed, chunk_fn]() {
+            for (size_t chunk = start_chunk; chunk < end_chunk; ++chunk) {
+                const size_t offset = chunk * CHUNK_SIZE;
+                const size_t size = std::min(CHUNK_SIZE, output.size() - offset);
+                chunk_fn(output.subspan(offset, size), seed + static_cast<uint32_t>(chunk));
+            }
+        });
+        start_chunk = end_chunk;
+    }
+}
+
 // Parallel generate - matches original random.hpp API
 template <typename T, typename DistGenFunc>
 inline void parallel_generate(
@@ -591,24 +528,32 @@ inline void parallel_generate(
     DistGenFunc dist_factory,
     uint32_t seed,
     uint32_t max_threads = std::thread::hardware_concurrency()) noexcept {
-    // SIMD fast path for float distributions
     if constexpr (std::same_as<T, float>) {
         using Dist = decltype(dist_factory());
         if constexpr (std::same_as<Dist, std::uniform_real_distribution<float>>) {
-            generate_uniform_simd_parallel(seq, dist_factory, seed, max_threads);
+            generate_parallel_chunks(
+                seq, seed, max_threads, [dist_factory](std::span<float> chunk, uint32_t chunk_seed) {
+                    generate_uniform_simd(chunk, chunk_seed, dist_factory);
+                });
         } else if constexpr (std::same_as<Dist, std::normal_distribution<float>>) {
-            generate_normal_simd_parallel(seq, dist_factory, seed, max_threads);
+            generate_parallel_chunks(
+                seq, seed, max_threads, [dist_factory](std::span<float> chunk, uint32_t chunk_seed) {
+                    generate_normal_simd(chunk, chunk_seed, dist_factory);
+                });
         }
-    }
-    // SIMD fast path for bfloat16 distributions
-    else if constexpr (std::same_as<T, bfloat16>) {
+    } else if constexpr (std::same_as<T, bfloat16>) {
         using Dist = decltype(dist_factory());
         if constexpr (std::same_as<Dist, std::uniform_real_distribution<float>>) {
-            generate_uniform_simd_parallel_bfloat16(seq, seed, dist_factory, max_threads);
+            generate_parallel_chunks(
+                seq, seed, max_threads, [dist_factory](std::span<bfloat16> chunk, uint32_t chunk_seed) {
+                    generate_uniform_simd_bfloat16(chunk, chunk_seed, dist_factory);
+                });
         } else if constexpr (std::same_as<Dist, std::normal_distribution<float>>) {
-            // For normal distribution with bfloat16, generate as float then convert
             std::vector<float> temp(seq.size());
-            generate_normal_simd_parallel(std::span<float>{temp}, dist_factory, seed, max_threads);
+            generate_parallel_chunks(
+                std::span<float>{temp}, seed, max_threads, [dist_factory](std::span<float> chunk, uint32_t chunk_seed) {
+                    generate_normal_simd(chunk, chunk_seed, dist_factory);
+                });
             for (size_t i = 0; i < seq.size(); ++i) {
                 seq[i] = float_to_bfloat16(temp[i]);
             }
