@@ -26,8 +26,9 @@ inline TileShape llk_math_eltwise_unary_broadcast_tile_shape(const std::uint32_t
 /**
  * @brief Initialize eltwise unary datacopy operations
  *
- * The unpack-to-dest decision is made inside the primitive, which reads the operand's
- * format from the BD table via buf_desc_id (== operand_id by convention).
+ * For a 32-bit unpack-to-dest operand the unpacker writes DEST directly and math has no MOP to
+ * program; that case is detected here from the compile-time operand format
+ * (@ref llk_math_is_unpack_to_dest_32b) and the math init is skipped.
  *
  * @tparam type sets which src register to copy from, values = <A2D, B2D>
  * @tparam EN_32BIT_DEST set if math destination register is set to Float32/Int32 mode
@@ -42,7 +43,7 @@ template <
     bool unpack_to_dest = false,
     [[maybe_unused]] bool is_int_fpu_en = false,
     [[maybe_unused]] bool tilize = false>
-inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand = 0) {
+inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand) {
     const std::uint32_t operand_id = get_operand_id(operand);
     const std::uint32_t num_faces = get_operand_num_faces(operand_id);
     const std::uint32_t face_r_dim = get_operand_face_r_dim(operand_id);
@@ -53,11 +54,7 @@ inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand = 0
     _configure_default_alu_data_format_state_<false /* IMPLIED_MATH_FORMAT */, EN_32BIT_DEST>(srcA_format, srcB_format);
 
     if constexpr (src_b_bcast_type == BroadcastType::NONE) {
-        // TEMPORARY: For a 32-bit unpack-to-dest operand the unpacker writes DEST directly and math is a
-        // sync-only forwarder, so there is no math MOP to program. Decide this from the
-        // compile-time unpack_dst_format (llk_math_is_unpack_to_dest_32b) rather than reading the
-        // unpacker's bd_table on the math thread, that CFG read perturbs the math tile counters
-        // (TILE_COUNTERS fault). Passing unpack_to_dest=false keeps the bd_table block uncompiled.
+        // 32-bit unpack-to-dest: math is a sync-only forwarder (unpacker wrrites DEST), no MOP to run.
         if (!(unpack_to_dest && llk_math_is_unpack_to_dest_32b(operand_id))) {
             _llk_math_eltwise_unary_datacopy_init_<type, EN_32BIT_DEST>(
                 num_rows /*num_rows_per_matrix*/, 1 /*num_matrices*/);
@@ -72,9 +69,8 @@ inline void llk_math_eltwise_unary_datacopy_init(const std::uint32_t operand = 0
 /**
  * @brief Performs an eltwise unary datacopy for a single tile.
  *
- * For the non-broadcast path the unpack-to-dest decision is made inside the primitive;
- * this wrapper forwards the flag and the operand id (used as buf_desc_id for the
- * BD-table format lookup).
+ * For the non-broadcast path, a 32-bit unpack-to-dest operand needs no math MOP; that case is
+ * detected here from the compile-time operand format (@ref llk_math_is_unpack_to_dest_32b).
  *
  * @tparam type sets which src register to copy from, values = <A2D, B2D>
  * @tparam EN_32BIT_DEST set if math destination register is set to Float32/Int32 mode
@@ -98,8 +94,7 @@ inline void llk_math_eltwise_unary_datacopy(const std::uint32_t dst_index, const
         const TileShape tile_shape = llk_math_eltwise_unary_broadcast_tile_shape(operand);
         _llk_math_eltwise_unary_broadcast_<src_b_bcast_type, false, EN_32BIT_DEST>(dst_index, tile_shape);
     } else {
-        // 32-bit unpack-to-dest: math is a sync-only forwarder (unpacker wrote DEST), no MOP to run.
-        // Gate on the compile-time unpack_dst_format, not a bd_table read on the math thread.
+        // 32-bit unpack-to-dest: math is a sync-only forwarder (unpacker wrrites DEST), no MOP to run.
         if (!(unpack_to_dest && llk_math_is_unpack_to_dest_32b(operand_id))) {
             _llk_math_eltwise_unary_datacopy_(num_faces * face_r_dim, dst_index);
         }
@@ -109,8 +104,8 @@ inline void llk_math_eltwise_unary_datacopy(const std::uint32_t dst_index, const
 /**
  * @brief Performs an eltwise unary datacopy for a block of tiles.
  *
- * The unpack-to-dest decision is made inside the primitive; this wrapper forwards the
- * flag and the operand id (used as buf_desc_id for the BD-table format lookup).
+ * A 32-bit unpack-to-dest operand needs no math MOP; that case is detected here from the
+ * compile-time operand format (@ref llk_math_is_unpack_to_dest_32b).
  *
  * @param start_dst_index Starting tile index in the destination register.
  * @param ntiles Number of tiles to copy to the destination register.
@@ -128,8 +123,7 @@ inline void llk_math_eltwise_unary_datacopy_block(
     const std::uint32_t face_r_dim = get_operand_face_r_dim(operand_id);
     const std::uint32_t num_rows = num_faces * face_r_dim;
 
-    // TEMPORARY: 32-bit unpack-to-dest: math is a sync-only forwarder, no MOP to run. Gate on compile-time
-    // unpack_dst_format rather than a bd_table read on the math thread.
+    // 32-bit unpack-to-dest: math is a sync-only forwarder (unpacker wrrites DEST), no MOP to run.
     if (!(unpack_to_dest && llk_math_is_unpack_to_dest_32b(operand_id))) {
         for (std::uint32_t dst_index = start_dst_index; dst_index < start_dst_index + ntiles; dst_index++) {
             _llk_math_eltwise_unary_datacopy_(num_rows, dst_index);
