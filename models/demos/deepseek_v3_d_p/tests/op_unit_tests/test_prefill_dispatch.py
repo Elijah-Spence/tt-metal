@@ -410,9 +410,6 @@ def dispatch_shape_params():
     params = []
     for name, config, extended in DISPATCH_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gptoss_120b":
-            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gptoss_120b_model,)
         # (seq_len_per_chip, emb_dim, num_routed_experts, num_experts_per_tok,
         #  dispatch_buffer_capacity_factor, run_pcc_check)
         params.append(

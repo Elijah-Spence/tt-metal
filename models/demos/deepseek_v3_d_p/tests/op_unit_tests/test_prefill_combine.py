@@ -360,9 +360,6 @@ def combine_shape_params():
     params = []
     for name, config, extended in COMBINE_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gptoss_120b":
-            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gptoss_120b_model,)
         shapes = [
             ("pcc", 128, config.NUM_ROUTED_EXPERTS // 16, 4, 4, True),
             ("perf_no_pcc", 3200, config.NUM_ROUTED_EXPERTS // 4, 2, 8, False),

@@ -502,9 +502,6 @@ def routed_expert_shape_params():
     params = []
     for name, config, extended in ROUTED_EXPERT_MODELS:
         marks = (pytest.mark.extended_model,) if extended else ()
-        if name == "gptoss_120b":
-            # gpt-oss runs on Wormhole only; this marker gates it off Blackhole in CI.
-            marks = marks + (pytest.mark.gptoss_120b_model,)
         params.append(
             pytest.param(
                 3200,

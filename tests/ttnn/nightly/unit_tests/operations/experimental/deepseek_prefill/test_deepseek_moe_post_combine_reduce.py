@@ -41,12 +41,7 @@ EMB_DIM_PARAMS = [
     pytest.param(MiniMaxM27Config.EMB_SIZE, id="minimax_m27", marks=pytest.mark.extended_model),
     pytest.param(DeepSeekV4ProConfig.EMB_SIZE, id="dsv4_pro", marks=pytest.mark.extended_model),
     pytest.param(DeepSeekV4FlashConfig.EMB_SIZE, id="dsv4_flash", marks=pytest.mark.extended_model),
-    pytest.param(
-        GptOss120BConfig.EMB_SIZE,
-        id="gptoss_120b",
-        # gpt-oss runs on Wormhole only; gptoss_120b_model marker gates it off Blackhole in CI.
-        marks=(pytest.mark.extended_model, pytest.mark.gptoss_120b_model),
-    ),
+    pytest.param(GptOss120BConfig.EMB_SIZE, id="gptoss_120b", marks=pytest.mark.extended_model),
 ]
 
 
